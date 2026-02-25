@@ -1,7 +1,7 @@
 ---
 name: qqbot-cron
-description: QQ Bot 智能提醒技能。支持一次性提醒、周期性任务、自动降级确保送达。可设置、查询、取消提醒。
-metadata: {"clawdbot":{"emoji":"⏰"}}
+description: QQBot 定时提醒技能。支持一次性和周期性提醒的创建、查询、取消。当通过 QQ 通道通信且涉及提醒/定时任务时使用此技能。
+metadata: {"openclaw":{"emoji":"⏰","requires":{"config":["channels.qqbot"]}}}
 ---
 
 # QQ Bot 智能提醒
