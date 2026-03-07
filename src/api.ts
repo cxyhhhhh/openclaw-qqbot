@@ -3,6 +3,7 @@
  */
 
 import { computeFileHash, getCachedFileInfo, setCachedFileInfo } from "./utils/upload-cache.js";
+import { sanitizeFileName } from "./utils/platform.js";
 
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
@@ -25,7 +26,7 @@ export function isMarkdownSupport(): boolean {
   return currentMarkdownSupport;
 }
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
+let cachedToken: { token: string; expiresAt: number; appId: string } | null = null;
 // Singleflight: 防止并发获取 Token 的 Promise 缓存
 let tokenFetchPromise: Promise<string> | null = null;
 
@@ -34,11 +35,20 @@ let tokenFetchPromise: Promise<string> | null = null;
  * 
  * 使用 singleflight 模式：当多个请求同时发现 Token 过期时，
  * 只有第一个请求会真正去获取新 Token，其他请求复用同一个 Promise。
+ * 
+ * 当 appId 发生变化时，自动使旧缓存失效并获取新 Token。
  */
 export async function getAccessToken(appId: string, clientSecret: string): Promise<string> {
-  // 检查缓存，提前 5 分钟刷新
-  if (cachedToken && Date.now() < cachedToken.expiresAt - 5 * 60 * 1000) {
+  // 检查缓存：未过期 且 appId 未变化 时复用
+  if (cachedToken && Date.now() < cachedToken.expiresAt - 5 * 60 * 1000 && cachedToken.appId === appId) {
     return cachedToken.token;
+  }
+
+  // appId 变化时，主动清除旧缓存
+  if (cachedToken && cachedToken.appId !== appId) {
+    console.log(`[qqbot-api] appId changed (${cachedToken.appId} → ${appId}), clearing token cache`);
+    cachedToken = null;
+    tokenFetchPromise = null; // 旧 appId 的 inflight 请求也作废
   }
 
   // Singleflight: 如果已有进行中的 Token 获取请求，复用它
@@ -113,9 +123,10 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
   cachedToken = {
     token: data.access_token,
     expiresAt: Date.now() + (data.expires_in ?? 7200) * 1000,
+    appId,
   };
 
-  console.log(`[qqbot-api] Token cached, expires at: ${new Date(cachedToken.expiresAt).toISOString()}`);
+  console.log(`[qqbot-api] Token cached for appId=${appId}, expires at: ${new Date(cachedToken.expiresAt).toISOString()}`);
   return cachedToken.token;
 }
 
@@ -143,38 +154,19 @@ export function getTokenStatus(): { status: "valid" | "expired" | "refreshing" |
 }
 
 /**
- * msg_seq 追踪器 - 用于对同一条消息的多次回复
- * key: msg_id, value: 当前 seq 值
- * 使用时间戳作为基础值，确保进程重启后不会重复
+ * 获取全局唯一的消息序号（范围 0 ~ 65535）
+ * 使用毫秒级时间戳低位 + 随机数异或混合，无状态，避免碰撞
+ * @param _msgId - 保留参数，不再用于分桶计数
  */
-const msgSeqTracker = new Map<string, number>();
-const seqBaseTime = Math.floor(Date.now() / 1000) % 100000000; // 取秒级时间戳的后8位作为基础
-
-/**
- * 获取并递增消息序号
- * 返回的 seq 会基于时间戳，避免进程重启后重复
- */
-export function getNextMsgSeq(msgId: string): number {
-  const current = msgSeqTracker.get(msgId) ?? 0;
-  const next = current + 1;
-  msgSeqTracker.set(msgId, next);
-  
-  // 清理过期的序号
-  // 简单策略：保留最近 1000 条
-  if (msgSeqTracker.size > 1000) {
-    const keys = Array.from(msgSeqTracker.keys());
-    for (let i = 0; i < 500; i++) {
-      msgSeqTracker.delete(keys[i]);
-    }
-  }
-  
-  // 结合时间戳基础值，确保唯一性
-  return seqBaseTime + next;
+export function getNextMsgSeq(_msgId: string): number {
+  const timePart = Date.now() % 100000000; // 毫秒时间戳后8位
+  const random = Math.floor(Math.random() * 65536); // 0~65535
+  return (timePart ^ random) % 65536; // 异或混合后限制在 0~65535
 }
 
 // API 请求超时配置（毫秒）
 const DEFAULT_API_TIMEOUT = 30000; // 默认 30 秒
-const FILE_UPLOAD_TIMEOUT = 120000; // 文件上传 120 秒（2 分钟）
+const FILE_UPLOAD_TIMEOUT = 120000; // 文件上传 120 秒
 
 /**
  * API 请求封装
@@ -297,9 +289,15 @@ async function apiRequestWithRetry<T = unknown>(
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       
-      // 不对以下错误重试：参数错误(400)、鉴权错误(401)、格式错误
+      // 不对以下错误重试，直接快速失败：
+      // - 参数错误(400)、鉴权错误(401)、格式错误
+      // - 服务端返回"上传超时"（QQ 平台侧拉取资源超时，重试也没用）
+      // - 本地请求超时（已等够 120s）
       const errMsg = lastError.message;
-      if (errMsg.includes("400") || errMsg.includes("401") || errMsg.includes("Invalid")) {
+      if (
+        errMsg.includes("400") || errMsg.includes("401") || errMsg.includes("Invalid") ||
+        errMsg.includes("上传超时") || errMsg.includes("timeout") || errMsg.includes("Timeout")
+      ) {
         throw lastError;
       }
 
@@ -559,7 +557,7 @@ export async function uploadC2CMedia(
   }
 
   if (fileType === MediaFileType.FILE && fileName) {
-    body.file_name = fileName;
+    body.file_name = sanitizeFileName(fileName);
   }
   
   // 使用带重试的请求
@@ -620,7 +618,7 @@ export async function uploadGroupMedia(
   }
 
   if (fileType === MediaFileType.FILE && fileName) {
-    body.file_name = fileName;
+    body.file_name = sanitizeFileName(fileName);
   }
   
   // 使用带重试的请求

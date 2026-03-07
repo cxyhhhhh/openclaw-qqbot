@@ -71,6 +71,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   reload: { configPrefixes: ["channels.qqbot"] },
   // CLI onboarding wizard
   onboarding: qqbotOnboardingAdapter,
+
   config: {
     listAccountIds: (cfg) => listQQBotAccountIds(cfg),
     resolveAccount: (cfg, accountId) => resolveQQBotAccount(cfg, accountId),
@@ -168,28 +169,25 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
      */
     normalizeTarget: (target: string) => {
       // 去掉 qqbot: 前缀（如果有）
-      const id = target.replace(/^qqbot:/i, "");
+      let id = target.replace(/^qqbot:/i, "");
       
       // 检查是否是已知格式
       if (id.startsWith("c2c:") || id.startsWith("group:") || id.startsWith("channel:")) {
         return { ok: true, to: `qqbot:${id}` };
       }
       
-      // 检查是否是纯 openid（32位十六进制，不带连字符）
+      // 检查是否是纯 openid（32位十六进制，带连字符）
       // QQ Bot OpenID 格式类似: 207A5B8339D01F6582911C014668B77B
-      const openIdHexPattern = /^[0-9a-fA-F]{32}$/;
-      if (openIdHexPattern.test(id)) {
-        return { ok: true, to: `qqbot:c2c:${id}` };
-      }
-
-      // 检查是否是 UUID 格式的 openid（带连字符）
-      const openIdUuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-      if (openIdUuidPattern.test(id)) {
+      const openIdPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      if (openIdPattern.test(id)) {
         return { ok: true, to: `qqbot:c2c:${id}` };
       }
       
       // 不认识的格式
-      return { ok: false, error: `Unrecognized QQ Bot target format: ${target}` };
+      return { 
+        ok: false, 
+        error: `Invalid QQ Bot target format: "${target}". Expected: qqbot:c2c:openid, qqbot:group:groupid, or openid (UUID format)` 
+      };
     },
     /**
      * 目标解析器配置
@@ -216,11 +214,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         if (/^(c2c|group|channel):/i.test(id)) {
           return true;
         }
-        // 32位十六进制 openid（不带连字符）
-        if (/^[0-9a-fA-F]{32}$/.test(id)) {
-          return true;
-        }
-        // UUID 格式的 openid（带连字符）
+        // UUID 格式的 openid（QQ Bot 的用户/群 ID 格式）
         const openIdPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
         return openIdPattern.test(id);
       },

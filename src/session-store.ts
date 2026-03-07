@@ -21,15 +21,14 @@ export interface SessionState {
   accountId: string;
   /** 保存时间 */
   savedAt: number;
+  /** 创建此 session 时使用的 appId（用于检测凭据变更） */
+  appId?: string;
 }
 
+import { getQQBotDataDir } from "./utils/platform.js";
+
 // Session 文件目录
-const SESSION_DIR = path.join(
-  process.env.HOME || "/tmp",
-  ".openclaw",
-  "qqbot",
-  "sessions"
-);
+const SESSION_DIR = getQQBotDataDir("sessions");
 
 // Session 过期时间（5分钟）- Resume 要求在断开后一定时间内恢复
 const SESSION_EXPIRE_TIME = 5 * 60 * 1000;
@@ -65,9 +64,10 @@ function getSessionPath(accountId: string): string {
 /**
  * 加载 Session 状态
  * @param accountId 账户 ID
- * @returns Session 状态，如果不存在或已过期返回 null
+ * @param expectedAppId 当前使用的 appId，如果与保存时的 appId 不匹配则视为失效
+ * @returns Session 状态，如果不存在、已过期或 appId 不匹配返回 null
  */
-export function loadSession(accountId: string): SessionState | null {
+export function loadSession(accountId: string, expectedAppId?: string): SessionState | null {
   const filePath = getSessionPath(accountId);
   
   try {
@@ -82,7 +82,17 @@ export function loadSession(accountId: string): SessionState | null {
     const now = Date.now();
     if (now - state.savedAt > SESSION_EXPIRE_TIME) {
       console.log(`[session-store] Session expired for ${accountId}, age: ${Math.round((now - state.savedAt) / 1000)}s`);
-      // 删除过期文件
+      try {
+        fs.unlinkSync(filePath);
+      } catch {
+        // 忽略删除错误
+      }
+      return null;
+    }
+
+    // 检查 appId 是否匹配（凭据变更检测）
+    if (expectedAppId && state.appId && state.appId !== expectedAppId) {
+      console.log(`[session-store] appId mismatch for ${accountId}: saved=${state.appId}, current=${expectedAppId}. Discarding stale session.`);
       try {
         fs.unlinkSync(filePath);
       } catch {
@@ -97,7 +107,7 @@ export function loadSession(accountId: string): SessionState | null {
       return null;
     }
     
-    console.log(`[session-store] Loaded session for ${accountId}: sessionId=${state.sessionId}, lastSeq=${state.lastSeq}, age=${Math.round((now - state.savedAt) / 1000)}s`);
+    console.log(`[session-store] Loaded session for ${accountId}: sessionId=${state.sessionId}, lastSeq=${state.lastSeq}, appId=${state.appId ?? "unknown"}, age=${Math.round((now - state.savedAt) / 1000)}s`);
     return state;
   } catch (err) {
     console.error(`[session-store] Failed to load session for ${accountId}: ${err}`);

@@ -30,8 +30,8 @@ export interface CronReminderPayload {
  */
 export interface MediaPayload {
   type: 'media';
-  /** 媒体类型：image, audio, video */
-  mediaType: 'image' | 'audio' | 'video';
+  /** 媒体类型：image, audio, video, file */
+  mediaType: 'image' | 'audio' | 'video' | 'file';
   /** 来源类型：url 或 file */
   source: 'url' | 'file';
   /** 媒体路径或 URL */

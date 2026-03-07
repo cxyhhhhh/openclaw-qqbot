@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { decode, encode, isSilk } from "silk-wasm";
+import { detectFfmpeg, isWindows } from "./platform.js";
 
 /**
  * 检查文件是否为 SILK 格式（QQ/微信语音常用格式）
@@ -150,6 +151,37 @@ export interface TTSConfig {
   apiKey: string;
   model: string;
   voice: string;
+  /** Azure OpenAI 风格：使用 api-key header 而非 Bearer token */
+  authStyle?: "bearer" | "api-key";
+  /** 附加在 URL 后的查询参数，如 Azure 的 api-version */
+  queryParams?: Record<string, string>;
+  /** 自定义速度（默认不传） */
+  speed?: number;
+}
+
+function resolveTTSFromBlock(
+  block: Record<string, any>,
+  providerCfg: Record<string, any> | undefined,
+): TTSConfig | null {
+  const baseUrl: string | undefined = block?.baseUrl || providerCfg?.baseUrl;
+  const apiKey: string | undefined = block?.apiKey || providerCfg?.apiKey;
+  const model: string = block?.model || "tts-1";
+  const voice: string = block?.voice || "alloy";
+  if (!baseUrl || !apiKey) return null;
+
+  const authStyle = (block?.authStyle || providerCfg?.authStyle) === "api-key" ? "api-key" as const : "bearer" as const;
+  const queryParams: Record<string, string> = { ...(providerCfg?.queryParams ?? {}), ...(block?.queryParams ?? {}) };
+  const speed: number | undefined = block?.speed;
+
+  return {
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    apiKey,
+    model,
+    voice,
+    authStyle,
+    ...(Object.keys(queryParams).length > 0 ? { queryParams } : {}),
+    ...(speed !== undefined ? { speed } : {}),
+  };
 }
 
 export function resolveTTSConfig(cfg: Record<string, unknown>): TTSConfig | null {
@@ -160,31 +192,44 @@ export function resolveTTSConfig(cfg: Record<string, unknown>): TTSConfig | null
   if (channelTts && channelTts.enabled !== false) {
     const providerId: string = channelTts?.provider || "openai";
     const providerCfg = c?.models?.providers?.[providerId];
-    const baseUrl: string | undefined = channelTts?.baseUrl || providerCfg?.baseUrl;
-    const apiKey: string | undefined = channelTts?.apiKey || providerCfg?.apiKey;
-    const model: string = channelTts?.model || "tts-1";
-    const voice: string = channelTts?.voice || "alloy";
-    if (baseUrl && apiKey) {
-      return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey, model, voice };
-    }
+    const result = resolveTTSFromBlock(channelTts, providerCfg);
+    if (result) return result;
   }
 
   // 回退到 messages.tts（openclaw 框架级 TTS 配置）
   const msgTts = c?.messages?.tts;
   if (msgTts && msgTts.auto !== "disabled") {
     const providerId: string = msgTts?.provider || "openai";
-    const providerBlock = msgTts?.[providerId];  // messages.tts.openai / messages.tts.xxx
+    const providerBlock = msgTts?.[providerId];
     const providerCfg = c?.models?.providers?.[providerId];
-    const baseUrl: string | undefined = providerBlock?.baseUrl || providerCfg?.baseUrl;
-    const apiKey: string | undefined = providerBlock?.apiKey || providerCfg?.apiKey;
-    const model: string = providerBlock?.model || "tts-1";
-    const voice: string = providerBlock?.voice || "alloy";
-    if (baseUrl && apiKey) {
-      return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey, model, voice };
-    }
+    const result = resolveTTSFromBlock(providerBlock ?? {}, providerCfg);
+    if (result) return result;
   }
 
   return null;
+}
+
+/**
+ * 构建 TTS 请求 URL 和 Headers
+ * 支持 OpenAI 标准和 Azure OpenAI 两种风格
+ */
+function buildTTSRequest(ttsCfg: TTSConfig): { url: string; headers: Record<string, string> } {
+  // 构建 URL：baseUrl + /audio/speech + 可选 queryParams
+  let url = `${ttsCfg.baseUrl}/audio/speech`;
+  if (ttsCfg.queryParams && Object.keys(ttsCfg.queryParams).length > 0) {
+    const qs = new URLSearchParams(ttsCfg.queryParams).toString();
+    url += `?${qs}`;
+  }
+
+  // 构建认证 Header
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (ttsCfg.authStyle === "api-key") {
+    headers["api-key"] = ttsCfg.apiKey;
+  } else {
+    headers["Authorization"] = `Bearer ${ttsCfg.apiKey}`;
+  }
+
+  return { url, headers };
 }
 
 export async function textToSpeechPCM(
@@ -192,30 +237,104 @@ export async function textToSpeechPCM(
   ttsCfg: TTSConfig,
 ): Promise<{ pcmBuffer: Buffer; sampleRate: number }> {
   const sampleRate = 24000;
+  const { url, headers } = buildTTSRequest(ttsCfg);
 
-  const resp = await fetch(`${ttsCfg.baseUrl}/audio/speech`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${ttsCfg.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: ttsCfg.model,
-      input: text,
-      voice: ttsCfg.voice,
-      response_format: "pcm",
-      sample_rate: sampleRate,
-      stream: false,
-    }),
-  });
+  console.log(`[tts] Request: model=${ttsCfg.model}, voice=${ttsCfg.voice}, authStyle=${ttsCfg.authStyle ?? "bearer"}, url=${url}`);
+  console.log(`[tts] Input text (${text.length} chars): "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
 
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    throw new Error(`TTS failed (HTTP ${resp.status}): ${detail.slice(0, 300)}`);
+  // 先尝试 PCM 格式（最高质量，无需二次转码）
+  const formats: Array<{ format: string; needsDecode: boolean }> = [
+    { format: "pcm", needsDecode: false },
+    { format: "mp3", needsDecode: true },
+  ];
+
+  let lastError: Error | null = null;
+  const startTime = Date.now();
+
+  for (const { format, needsDecode } of formats) {
+    const controller = new AbortController();
+    const ttsTimeout = setTimeout(() => controller.abort(), 120000);
+
+    try {
+      const body: Record<string, unknown> = {
+        model: ttsCfg.model,
+        input: text,
+        voice: ttsCfg.voice,
+        response_format: format,
+        ...(format === "pcm" ? { sample_rate: sampleRate } : {}),
+        ...(ttsCfg.speed !== undefined ? { speed: ttsCfg.speed } : {}),
+      };
+
+      console.log(`[tts] Trying format=${format}...`);
+      const fetchStart = Date.now();
+      const resp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(ttsTimeout));
+
+      const fetchMs = Date.now() - fetchStart;
+
+      if (!resp.ok) {
+        const detail = await resp.text().catch(() => "");
+        console.log(`[tts] HTTP ${resp.status} for format=${format} (${fetchMs}ms): ${detail.slice(0, 200)}`);
+        // 如果 PCM 不支持（Azure 等），回退到 mp3
+        if (format === "pcm" && (resp.status === 400 || resp.status === 422)) {
+          console.log(`[tts] PCM format not supported, falling back to mp3`);
+          lastError = new Error(`TTS PCM not supported: ${detail.slice(0, 200)}`);
+          continue;
+        }
+        throw new Error(`TTS failed (HTTP ${resp.status}): ${detail.slice(0, 300)}`);
+      }
+
+      const arrayBuffer = await resp.arrayBuffer();
+      const rawBuffer = Buffer.from(arrayBuffer);
+      console.log(`[tts] Response OK: format=${format}, size=${rawBuffer.length} bytes, latency=${fetchMs}ms`);
+
+      if (!needsDecode) {
+        console.log(`[tts] Done: PCM direct, ${rawBuffer.length} bytes, total=${Date.now() - startTime}ms`);
+        return { pcmBuffer: rawBuffer, sampleRate };
+      }
+
+      // mp3 需要解码为 PCM
+      console.log(`[tts] Decoding mp3 response (${rawBuffer.length} bytes) to PCM...`);
+      const tmpDir = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "tts-")));
+      const tmpMp3 = path.join(tmpDir, "tts.mp3");
+      fs.writeFileSync(tmpMp3, rawBuffer);
+
+      try {
+        // 优先用 ffmpeg
+        const ffmpegCmd = await checkFfmpeg();
+        if (ffmpegCmd) {
+          const pcmBuf = await ffmpegToPCM(ffmpegCmd, tmpMp3, sampleRate);
+          console.log(`[tts] Done: mp3→PCM (ffmpeg), ${pcmBuf.length} bytes, total=${Date.now() - startTime}ms`);
+          return { pcmBuffer: pcmBuf, sampleRate };
+        }
+        // WASM fallback
+        const pcmBuf = await wasmDecodeMp3ToPCM(rawBuffer, sampleRate);
+        if (pcmBuf) {
+          console.log(`[tts] Done: mp3→PCM (wasm), ${pcmBuf.length} bytes, total=${Date.now() - startTime}ms`);
+          return { pcmBuffer: pcmBuf, sampleRate };
+        }
+        throw new Error("No decoder available for mp3 (install ffmpeg for best compatibility)");
+      } finally {
+        try { fs.unlinkSync(tmpMp3); fs.rmdirSync(tmpDir); } catch {}
+      }
+    } catch (err) {
+      clearTimeout(ttsTimeout);
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.log(`[tts] Error for format=${format}: ${lastError.message.slice(0, 200)}`);
+      if (format === "pcm") {
+        // PCM 失败时不立即抛出，尝试 mp3
+        continue;
+      }
+      throw lastError;
+    }
   }
 
-  const arrayBuffer = await resp.arrayBuffer();
-  return { pcmBuffer: Buffer.from(arrayBuffer), sampleRate };
+  console.log(`[tts] All formats exhausted after ${Date.now() - startTime}ms`);
+  throw lastError ?? new Error("TTS failed: all formats exhausted");
 }
 
 export async function pcmToSilk(
@@ -302,12 +421,12 @@ export async function audioFileToSilkBase64(filePath: string, directUploadFormat
 
   const targetRate = 24000;
 
-  // 2. 优先使用 ffmpeg（业界标准做法）
-  const hasFfmpeg = await checkFfmpeg();
-  if (hasFfmpeg) {
+  // 2. 优先使用 ffmpeg（业界标准做法，跨平台检测）
+  const ffmpegCmd = await checkFfmpeg();
+  if (ffmpegCmd) {
     try {
-      console.log(`[audio-convert] ffmpeg: converting ${ext} (${buf.length} bytes) → PCM s16le ${targetRate}Hz`);
-      const pcmBuf = await ffmpegToPCM(filePath, targetRate);
+      console.log(`[audio-convert] ffmpeg (${ffmpegCmd}): converting ${ext} (${buf.length} bytes) → PCM s16le ${targetRate}Hz`);
+      const pcmBuf = await ffmpegToPCM(ffmpegCmd, filePath, targetRate);
       if (pcmBuf.length === 0) {
         console.error(`[audio-convert] ffmpeg produced empty PCM output`);
         return null;
@@ -350,7 +469,12 @@ export async function audioFileToSilkBase64(filePath: string, directUploadFormat
     }
   }
 
-  console.error(`[audio-convert] unsupported format: ${ext} (no ffmpeg available). Install ffmpeg for full format support.`);
+  const installHint = isWindows()
+    ? "安装方式: choco install ffmpeg 或 scoop install ffmpeg 或从 https://ffmpeg.org 下载"
+    : process.platform === "darwin"
+      ? "安装方式: brew install ffmpeg"
+      : "安装方式: sudo apt install ffmpeg 或 sudo yum install ffmpeg";
+  console.error(`[audio-convert] unsupported format: ${ext} (no ffmpeg available). ${installHint}`);
   return null;
 }
 
@@ -359,11 +483,11 @@ export async function audioFileToSilkBase64(filePath: string, directUploadFormat
  * 用于 TTS 生成后等待文件写入完成
  *
  * @param filePath 文件路径
- * @param timeoutMs 最大等待时间（默认 30 秒）
+ * @param timeoutMs 最大等待时间（默认 2 分钟）
  * @param pollMs 轮询间隔（默认 500ms）
  * @returns 文件大小（字节），超时或文件始终为空返回 0
  */
-export async function waitForFile(filePath: string, timeoutMs: number = 30000, pollMs: number = 500): Promise<number> {
+export async function waitForFile(filePath: string, timeoutMs: number = 120000, pollMs: number = 500): Promise<number> {
   const start = Date.now();
   let lastSize = -1;
   let stableCount = 0;
@@ -410,33 +534,24 @@ export async function waitForFile(filePath: string, timeoutMs: number = 30000, p
   return 0;
 }
 
-// ============ ffmpeg 可用性检测 ============
-
-let _ffmpegAvailable: boolean | null = null;
+// ============ ffmpeg 跨平台调用 ============
 
 /**
- * 检测系统是否安装了 ffmpeg
- * 结果会缓存，只检测一次
+ * 检测 ffmpeg 是否可用（委托给 platform.ts 跨平台检测）
+ * @returns ffmpeg 可执行路径或 null
  */
-function checkFfmpeg(): Promise<boolean> {
-  if (_ffmpegAvailable !== null) return Promise.resolve(_ffmpegAvailable);
-  return new Promise((resolve) => {
-    execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err) => {
-      _ffmpegAvailable = !err;
-      if (_ffmpegAvailable) {
-        console.log("[audio-convert] ffmpeg detected, using ffmpeg for audio decoding");
-      } else {
-        console.warn("[audio-convert] ffmpeg not found, falling back to WASM decoders (limited format support)");
-      }
-      resolve(_ffmpegAvailable);
-    });
-  });
+async function checkFfmpeg(): Promise<string | null> {
+  return detectFfmpeg();
 }
 
 /**
  * 使用 ffmpeg 将任意音频文件转换为 PCM s16le 单声道 24kHz
+ *
+ * 跨平台注意:
+ * - Windows 上 pipe:1 需要 encoding: "buffer" 防止 BOM 问题
+ * - 使用 detectFfmpeg() 返回的完整路径，兼容非 PATH 安装
  */
-function ffmpegToPCM(inputPath: string, sampleRate: number = 24000): Promise<Buffer> {
+function ffmpegToPCM(ffmpegCmd: string, inputPath: string, sampleRate: number = 24000): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const args = [
       "-i", inputPath,
@@ -447,9 +562,11 @@ function ffmpegToPCM(inputPath: string, sampleRate: number = 24000): Promise<Buf
       "-v", "error",
       "pipe:1",
     ];
-    execFile("ffmpeg", args, {
+    execFile(ffmpegCmd, args, {
       maxBuffer: 50 * 1024 * 1024,
       encoding: "buffer",
+      // Windows: 隐藏弹出的 cmd 窗口
+      ...(isWindows() ? { windowsHide: true } : {}),
     }, (err, stdout) => {
       if (err) {
         reject(new Error(`ffmpeg failed: ${err.message}`));

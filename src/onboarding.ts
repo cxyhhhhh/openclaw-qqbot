@@ -208,13 +208,11 @@ statusLines: [`QQ Bot: ${configured ? "已配置" : "需要 AppID 和 ClientSecr
     // 默认允许所有人执行命令（用户无感知）
     const allowFrom: string[] = resolvedAccount.config?.allowFrom ?? ["*"];
 
-    // 应用配置
+    // 应用配置（markdownSupport 默认开启，如需关闭可用 set-markdown.sh）
     if (appId && clientSecret) {
-      // 询问是否启用 Markdown 支持
-      const enableMarkdown = await prompter.confirm({
-        message: "是否启用 Markdown 消息格式？（需要机器人具备该权限，默认关闭）",
-        initialValue: false,
-      });
+      const existingQQBot = (next.channels?.qqbot as Record<string, unknown>) || {};
+      // 保留已有的 markdownSupport 设置，新装默认 true
+      const markdownSupport = existingQQBot.markdownSupport ?? true;
 
       if (accountId === DEFAULT_ACCOUNT_ID) {
         next = {
@@ -222,31 +220,35 @@ statusLines: [`QQ Bot: ${configured ? "已配置" : "需要 AppID 和 ClientSecr
           channels: {
             ...next.channels,
             qqbot: {
-              ...(next.channels?.qqbot as Record<string, unknown> || {}),
+              ...existingQQBot,
               enabled: true,
               appId,
               clientSecret,
-              markdownSupport: enableMarkdown,
+              markdownSupport,
               allowFrom,
             },
           },
         };
       } else {
+        const existingAccounts = ((next.channels?.qqbot as QQBotChannelConfig)?.accounts || {});
+        const existingAccount = existingAccounts[accountId] || {};
+        const acctMarkdown = existingAccount.markdownSupport ?? true;
+
         next = {
           ...next,
           channels: {
             ...next.channels,
             qqbot: {
-              ...(next.channels?.qqbot as Record<string, unknown> || {}),
+              ...existingQQBot,
               enabled: true,
               accounts: {
-                ...((next.channels?.qqbot as QQBotChannelConfig)?.accounts || {}),
+                ...existingAccounts,
                 [accountId]: {
-                  ...((next.channels?.qqbot as QQBotChannelConfig)?.accounts?.[accountId] || {}),
+                  ...existingAccount,
                   enabled: true,
                   appId,
                   clientSecret,
-                  markdownSupport: enableMarkdown,
+                  markdownSupport: acctMarkdown,
                   allowFrom,
                 },
               },

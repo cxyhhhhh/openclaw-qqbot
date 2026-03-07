@@ -24,6 +24,7 @@ import {
 import { isAudioFile, audioFileToSilkBase64, waitForFile } from "./utils/audio-convert.js";
 import { normalizeMediaTags } from "./utils/media-tags.js";
 import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize } from "./utils/file-utils.js";
+import { isLocalPath as isLocalFilePath, normalizePath, sanitizeFileName } from "./utils/platform.js";
 
 // ============ 消息回复限流器 ============
 // 同一 message_id 1小时内最多回复 4 次，超过 1 小时无法被动回复（需改为主动消息）
@@ -303,12 +304,55 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
       
       const tagName = match[1]!.toLowerCase(); // "qqimg" or "qqvoice" or "qqfile"
       
-      // 剥离 MEDIA: 前缀（框架可能注入）
+      // 剥离 MEDIA: 前缀（框架可能注入），展开 ~ 路径
       let mediaPath = match[2]?.trim() ?? "";
       if (mediaPath.startsWith("MEDIA:")) {
         mediaPath = mediaPath.slice("MEDIA:".length);
       }
-      
+      mediaPath = normalizePath(mediaPath);
+
+      // 处理可能被模型转义的路径
+      // 1. 双反斜杠 -> 单反斜杠（Markdown 转义）
+      mediaPath = mediaPath.replace(/\\\\/g, "\\");
+
+      // 2. 八进制转义序列 + UTF-8 双重编码修复
+      try {
+        const hasOctal = /\\[0-7]{1,3}/.test(mediaPath);
+        const hasNonASCII = /[\u0080-\u00FF]/.test(mediaPath);
+
+        if (hasOctal || hasNonASCII) {
+          console.log(`[qqbot] sendText: Decoding path with mixed encoding: ${mediaPath}`);
+
+          // Step 1: 将八进制转义转换为字节
+          let decoded = mediaPath.replace(/\\([0-7]{1,3})/g, (_: string, octal: string) => {
+            return String.fromCharCode(parseInt(octal, 8));
+          });
+
+          // Step 2: 提取所有字节（包括 Latin-1 字符）
+          const bytes: number[] = [];
+          for (let i = 0; i < decoded.length; i++) {
+            const code = decoded.charCodeAt(i);
+            if (code <= 0xFF) {
+              bytes.push(code);
+            } else {
+              const charBytes = Buffer.from(decoded[i], 'utf8');
+              bytes.push(...charBytes);
+            }
+          }
+
+          // Step 3: 尝试按 UTF-8 解码
+          const buffer = Buffer.from(bytes);
+          const utf8Decoded = buffer.toString('utf8');
+
+          if (!utf8Decoded.includes('\uFFFD') || utf8Decoded.length < decoded.length) {
+            mediaPath = utf8Decoded;
+            console.log(`[qqbot] sendText: Successfully decoded path: ${mediaPath}`);
+          }
+        }
+      } catch (decodeErr) {
+        console.error(`[qqbot] sendText: Path decode error: ${decodeErr}`);
+      }
+
       if (mediaPath) {
         if (tagName === "qqvoice") {
           sendQueue.push({ type: "voice", content: mediaPath });
@@ -530,7 +574,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
           // 发送文件
           const filePath = item.content;
           const isHttpUrl = filePath.startsWith("http://") || filePath.startsWith("https://");
-          const fileName = path.basename(filePath);
+          const fileName = sanitizeFileName(path.basename(filePath));
 
           if (isHttpUrl) {
             // 公网 URL：直接通过 url 参数上传
@@ -755,7 +799,8 @@ export async function sendProactiveMessage(
  */
 export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResult> {
   const { to, text, replyToId, account } = ctx;
-  const { mediaUrl } = ctx;
+  // 展开波浪线路径：~/Desktop/file.png → /Users/xxx/Desktop/file.png
+  const mediaUrl = normalizePath(ctx.mediaUrl);
 
   if (!account.appId || !account.clientSecret) {
     return { channel: "qqbot", error: "QQBot not configured (missing appId or clientSecret)" };
@@ -766,10 +811,7 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
   }
 
   // 判断是否为语音文件（本地文件路径 + 音频扩展名）
-  const isLocalPath = mediaUrl.startsWith("/") || 
-                      /^[a-zA-Z]:[\\/]/.test(mediaUrl) ||
-                      mediaUrl.startsWith("./") ||
-                      mediaUrl.startsWith("../");
+  const isLocalPath = isLocalFilePath(mediaUrl);
   const isHttpUrl = mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
 
   if (isLocalPath && isAudioFile(mediaUrl)) {
@@ -1109,7 +1151,7 @@ async function sendDocumentFile(ctx: MediaOutboundContext): Promise<OutboundResu
   }
 
   const isHttpUrl = mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
-  const fileName = path.basename(mediaUrl);
+  const fileName = sanitizeFileName(path.basename(mediaUrl));
 
   try {
     const accessToken = await getAccessToken(account.appId, account.clientSecret);

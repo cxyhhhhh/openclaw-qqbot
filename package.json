@@ -1,6 +1,6 @@
 {
   "name": "@sliverp/qqbot",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -39,10 +39,12 @@
     "prepack": "npm install --omit=dev"
   },
   "dependencies": {
+    "mpg123-decoder": "^1.0.3",
     "silk-wasm": "^3.7.1",
     "ws": "^8.18.0"
   },
   "bundledDependencies": [
+    "mpg123-decoder",
     "silk-wasm",
     "ws"
   ],
@@ -58,6 +60,7 @@
   },
   "homepage": "https://github.com/sliverp/qqbot",
   "bundleDependencies": [
+    "mpg123-decoder",
     "silk-wasm",
     "ws"
   ]
