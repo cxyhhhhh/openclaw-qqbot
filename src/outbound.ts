@@ -9,6 +9,7 @@ import {
   getAccessToken, 
   sendC2CMessage, 
   sendChannelMessage, 
+  sendDmMessage,
   sendGroupMessage,
   sendProactiveC2CMessage,
   sendProactiveGroupMessage,
@@ -180,7 +181,7 @@ export interface OutboundResult {
  *   - channel:xxx -> 频道
  *   - 纯数字 -> 频道
  */
-function parseTarget(to: string): { type: "c2c" | "group" | "channel"; id: string } {
+function parseTarget(to: string): { type: "c2c" | "group" | "channel" | "dm"; id: string } {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] [qqbot] parseTarget: input=${to}`);
   
@@ -207,6 +208,19 @@ function parseTarget(to: string): { type: "c2c" | "group" | "channel"; id: strin
     }
     console.log(`[${timestamp}] [qqbot] parseTarget: group target, group ID=${groupId}`);
     return { type: "group", id: groupId };
+  }
+  
+  if (id.startsWith("dm:")) {
+    // dm:guildId 或 dm:guildId:userId — 只需要 guildId 作为发送目标
+    const dmPart = id.slice(3);
+    const guildId = dmPart.split(":")[0];
+    if (!guildId || guildId.length === 0) {
+      const error = `Invalid dm target format: ${to} - missing guild ID`;
+      console.error(`[${timestamp}] [qqbot] parseTarget: ${error}`);
+      throw new Error(error);
+    }
+    console.log(`[${timestamp}] [qqbot] parseTarget: dm target, guild ID=${guildId}`);
+    return { type: "dm", id: guildId };
   }
   
   if (id.startsWith("channel:")) {
@@ -403,6 +417,10 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
               const result = await sendGroupMessage(accessToken, target.id, item.content, replyToId);
               recordMessageReply(replyToId);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else if (target.type === "dm") {
+              const result = await sendDmMessage(accessToken, target.id, item.content, replyToId);
+              recordMessageReply(replyToId);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else {
               const result = await sendChannelMessage(accessToken, target.id, item.content, replyToId);
               recordMessageReply(replyToId);
@@ -415,6 +433,10 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else if (target.type === "group") {
               const result = await sendProactiveGroupMessage(accessToken, target.id, item.content);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else if (target.type === "dm") {
+              // DM 主动消息暂用普通发送
+              const result = await sendDmMessage(accessToken, target.id, item.content);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else {
               const result = await sendChannelMessage(accessToken, target.id, item.content);
@@ -463,6 +485,11 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
           } else if (target.type === "group") {
             const result = await sendGroupImageMessage(accessToken, target.id, imageUrl, replyToId ?? undefined);
             lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+          } else if (target.type === "dm") {
+            if (isHttpUrl) {
+              const result = await sendDmMessage(accessToken, target.id, `![](${imagePath})`, replyToId ?? undefined);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            }
           } else if (isHttpUrl) {
             // 频道使用 Markdown 格式（仅支持公网 URL）
             const result = await sendChannelMessage(accessToken, target.id, `![](${imagePath})`, replyToId ?? undefined);
@@ -510,6 +537,9 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
           } else if (target.type === "group") {
             const result = await sendGroupVoiceMessage(accessToken, target.id, silkBase64, replyToId ?? undefined);
             lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+          } else if (target.type === "dm") {
+            const result = await sendDmMessage(accessToken, target.id, `[语音消息暂不支持频道私信发送]`, replyToId ?? undefined);
+            lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
           } else {
             const result = await sendChannelMessage(accessToken, target.id, `[语音消息暂不支持频道发送]`, replyToId ?? undefined);
             lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
@@ -527,6 +557,9 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else if (target.type === "group") {
               const result = await sendGroupVideoMessage(accessToken, target.id, videoPath, undefined, replyToId ?? undefined);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else if (target.type === "dm") {
+              const result = await sendDmMessage(accessToken, target.id, `[视频消息暂不支持频道私信发送]`, replyToId ?? undefined);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else {
               const result = await sendChannelMessage(accessToken, target.id, `[视频消息暂不支持频道发送]`, replyToId ?? undefined);
@@ -564,6 +597,9 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
             } else if (target.type === "group") {
               const result = await sendGroupVideoMessage(accessToken, target.id, undefined, videoBase64, replyToId ?? undefined);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else if (target.type === "dm") {
+              const result = await sendDmMessage(accessToken, target.id, `[视频消息暂不支持频道私信发送]`, replyToId ?? undefined);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else {
               const result = await sendChannelMessage(accessToken, target.id, `[视频消息暂不支持频道发送]`, replyToId ?? undefined);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
@@ -583,6 +619,9 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else if (target.type === "group") {
               const result = await sendGroupFileMessage(accessToken, target.id, undefined, filePath, replyToId ?? undefined, fileName);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else if (target.type === "dm") {
+              const result = await sendDmMessage(accessToken, target.id, `[文件消息暂不支持频道私信发送]`, replyToId ?? undefined);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else {
               const result = await sendChannelMessage(accessToken, target.id, `[文件消息暂不支持频道发送]`, replyToId ?? undefined);
@@ -619,6 +658,9 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else if (target.type === "group") {
               const result = await sendGroupFileMessage(accessToken, target.id, fileBase64, undefined, replyToId ?? undefined, fileName);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else if (target.type === "dm") {
+              const result = await sendDmMessage(accessToken, target.id, `[文件消息暂不支持频道私信发送]`, replyToId ?? undefined);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             } else {
               const result = await sendChannelMessage(accessToken, target.id, `[文件消息暂不支持频道发送]`, replyToId ?? undefined);
@@ -671,6 +713,10 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
       } else if (target.type === "group") {
         const result = await sendProactiveGroupMessage(accessToken, target.id, text);
         return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+      } else if (target.type === "dm") {
+        // DM 主动消息暂用普通发送
+        const result = await sendDmMessage(accessToken, target.id, text);
+        return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
       } else {
         // 频道暂不支持主动消息
         const result = await sendChannelMessage(accessToken, target.id, text);
@@ -687,6 +733,10 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
     } else if (target.type === "group") {
       const result = await sendGroupMessage(accessToken, target.id, text, replyToId);
       // 记录回复次数
+      recordMessageReply(replyToId);
+      return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+    } else if (target.type === "dm") {
+      const result = await sendDmMessage(accessToken, target.id, text, replyToId);
       recordMessageReply(replyToId);
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
     } else {
@@ -740,6 +790,11 @@ export async function sendProactiveMessage(
       console.log(`[${timestamp}] [qqbot] sendProactiveMessage: sending proactive group message to group=${target.id}`);
       const result = await sendProactiveGroupMessage(accessToken, target.id, text);
       console.log(`[${timestamp}] [qqbot] sendProactiveMessage: proactive group message sent successfully, messageId=${result.id}`);
+      return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+    } else if (target.type === "dm") {
+      console.log(`[${timestamp}] [qqbot] sendProactiveMessage: sending DM message to guild=${target.id}`);
+      const result = await sendDmMessage(accessToken, target.id, text);
+      console.log(`[${timestamp}] [qqbot] sendProactiveMessage: DM message sent successfully, messageId=${result.id}`);
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
     } else {
       // 频道暂不支持主动消息，使用普通发送
@@ -907,6 +962,11 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
       imageResult = await sendGroupImageMessage(
         accessToken, target.id, processedMediaUrl, replyToId ?? undefined, undefined
       );
+    } else if (target.type === "dm") {
+      const displayUrl = isLocalPath ? "[本地文件]" : mediaUrl;
+      const textWithUrl = text ? `${text}\n${displayUrl}` : displayUrl;
+      const result = await sendDmMessage(accessToken, target.id, textWithUrl, replyToId ?? undefined);
+      return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
     } else {
       const displayUrl = isLocalPath ? "[本地文件]" : mediaUrl;
       const textWithUrl = text ? `${text}\n${displayUrl}` : displayUrl;
@@ -966,6 +1026,9 @@ async function sendVoiceFile(ctx: MediaOutboundContext): Promise<OutboundResult>
         result = await sendC2CVoiceMessage(accessToken, target.id, fallbackBase64, replyToId ?? undefined);
       } else if (target.type === "group") {
         result = await sendGroupVoiceMessage(accessToken, target.id, fallbackBase64, replyToId ?? undefined);
+      } else if (target.type === "dm") {
+        const r = await sendDmMessage(accessToken, target.id, `[语音消息暂不支持频道私信发送]`, replyToId ?? undefined);
+        return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
       } else {
         const r = await sendChannelMessage(accessToken, target.id, `[语音消息暂不支持频道发送]`, replyToId ?? undefined);
         return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
@@ -984,6 +1047,9 @@ async function sendVoiceFile(ctx: MediaOutboundContext): Promise<OutboundResult>
       voiceResult = await sendC2CVoiceMessage(accessToken, target.id, silkBase64, replyToId ?? undefined);
     } else if (target.type === "group") {
       voiceResult = await sendGroupVoiceMessage(accessToken, target.id, silkBase64, replyToId ?? undefined);
+    } else if (target.type === "dm") {
+      const r = await sendDmMessage(accessToken, target.id, `[语音消息暂不支持频道私信发送]`, replyToId ?? undefined);
+      return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
     } else {
       const r = await sendChannelMessage(accessToken, target.id, `[语音消息暂不支持频道发送]`, replyToId ?? undefined);
       return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
@@ -1046,6 +1112,9 @@ async function sendVideoUrl(ctx: MediaOutboundContext): Promise<OutboundResult> 
       videoResult = await sendC2CVideoMessage(accessToken, target.id, mediaUrl, undefined, replyToId ?? undefined);
     } else if (target.type === "group") {
       videoResult = await sendGroupVideoMessage(accessToken, target.id, mediaUrl, undefined, replyToId ?? undefined);
+    } else if (target.type === "dm") {
+      const r = await sendDmMessage(accessToken, target.id, `[视频消息暂不支持频道私信发送]`, replyToId ?? undefined);
+      return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
     } else {
       const r = await sendChannelMessage(accessToken, target.id, `[视频消息暂不支持频道发送]`, replyToId ?? undefined);
       return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
@@ -1109,6 +1178,9 @@ async function sendVideoFile(ctx: MediaOutboundContext): Promise<OutboundResult>
       videoResult = await sendC2CVideoMessage(accessToken, target.id, undefined, videoBase64, replyToId ?? undefined);
     } else if (target.type === "group") {
       videoResult = await sendGroupVideoMessage(accessToken, target.id, undefined, videoBase64, replyToId ?? undefined);
+    } else if (target.type === "dm") {
+      const r = await sendDmMessage(accessToken, target.id, `[视频消息暂不支持频道私信发送]`, replyToId ?? undefined);
+      return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
     } else {
       const r = await sendChannelMessage(accessToken, target.id, `[视频消息暂不支持频道发送]`, replyToId ?? undefined);
       return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
@@ -1166,6 +1238,9 @@ async function sendDocumentFile(ctx: MediaOutboundContext): Promise<OutboundResu
         fileResult = await sendC2CFileMessage(accessToken, target.id, undefined, mediaUrl, replyToId ?? undefined, fileName);
       } else if (target.type === "group") {
         fileResult = await sendGroupFileMessage(accessToken, target.id, undefined, mediaUrl, replyToId ?? undefined, fileName);
+      } else if (target.type === "dm") {
+        const r = await sendDmMessage(accessToken, target.id, `[文件消息暂不支持频道私信发送]`, replyToId ?? undefined);
+        return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
       } else {
         const r = await sendChannelMessage(accessToken, target.id, `[文件消息暂不支持频道发送]`, replyToId ?? undefined);
         return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
@@ -1194,6 +1269,9 @@ async function sendDocumentFile(ctx: MediaOutboundContext): Promise<OutboundResu
         fileResult = await sendC2CFileMessage(accessToken, target.id, fileBase64, undefined, replyToId ?? undefined, fileName);
       } else if (target.type === "group") {
         fileResult = await sendGroupFileMessage(accessToken, target.id, fileBase64, undefined, replyToId ?? undefined, fileName);
+      } else if (target.type === "dm") {
+        const r = await sendDmMessage(accessToken, target.id, `[文件消息暂不支持频道私信发送]`, replyToId ?? undefined);
+        return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
       } else {
         const r = await sendChannelMessage(accessToken, target.id, `[文件消息暂不支持频道发送]`, replyToId ?? undefined);
         return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
