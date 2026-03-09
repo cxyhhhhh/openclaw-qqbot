@@ -361,8 +361,8 @@ STT supports two-level configuration with priority fallback:
 > npm package coming soon. Once published, you can install and upgrade via:
 >
 > ```bash
-> openclaw plugins install @tencent-connect/openclaw-qq@latest
-> openclaw plugins upgrade @tencent-connect/openclaw-qq@latest
+> openclaw plugins install openclaw-qqbot@latest
+> openclaw plugins upgrade openclaw-qqbot@latest
 > ```
 
 ### Via upgrade-and-run.sh (One-Click)

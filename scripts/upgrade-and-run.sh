@@ -226,7 +226,37 @@ else
             echo "✅ 已从备份恢复 qqbot 通道配置"
         fi
     else
-        echo "未提供 AppID/Secret，使用已有配置"
+        # 检测是否存在已有的 qqbot 通道配置
+        _has_channel=0
+        for _app in openclaw clawdbot moltbot; do
+            _cfg="$HOME/.$_app/$_app.json"
+            if [ -f "$_cfg" ]; then
+                _tok=$(node -e "
+                    const cfg=JSON.parse(require('fs').readFileSync('$_cfg','utf8'));
+                    const ch=cfg.channels&&cfg.channels.qqbot;
+                    if(ch&&(ch.token||(ch.appId&&ch.clientSecret)))process.stdout.write('1');
+                " 2>/dev/null || true)
+                if [ "$_tok" = "1" ]; then _has_channel=1; break; fi
+            fi
+        done
+
+        if [ "$_has_channel" -eq 0 ]; then
+            echo ""
+            echo "❌ 未检测到 qqbot 通道配置！"
+            echo ""
+            echo "首次运行请提供 AppID 和 AppSecret："
+            echo ""
+            echo "  bash $0 --appid <你的AppID> --secret <你的AppSecret>"
+            echo ""
+            echo "也可以通过环境变量："
+            echo ""
+            echo "  QQBOT_APPID=<AppID> QQBOT_SECRET=<AppSecret> bash $0"
+            echo ""
+            echo "AppID 和 AppSecret 可在 QQ 开放平台 (https://q.qq.com) 获取。"
+            exit 1
+        else
+            echo "使用已有配置"
+        fi
     fi
 fi
 

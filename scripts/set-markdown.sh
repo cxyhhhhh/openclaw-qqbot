@@ -9,7 +9,21 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+# 自动检测 CLI 配置文件（兼容 openclaw / clawdbot / moltbot）
+OPENCLAW_CONFIG=""
+for app in openclaw clawdbot moltbot; do
+    cfg="$HOME/.$app/$app.json"
+    if [ -f "$cfg" ]; then
+        OPENCLAW_CONFIG="$cfg"
+        break
+    fi
+done
+
+if [ -z "$OPENCLAW_CONFIG" ]; then
+    echo "❌ 未找到 openclaw / clawdbot / moltbot 配置文件"
+    echo "  请先运行 openclaw onboard 初始化配置"
+    exit 1
+fi
 
 show_help() {
     echo "用法: $0 [选项]"
@@ -32,11 +46,6 @@ show_help() {
 
 set_markdown_value() {
     local value="$1"
-    if [ ! -f "$OPENCLAW_CONFIG" ]; then
-        echo "  错误: 配置文件不存在: $OPENCLAW_CONFIG"
-        echo "  请先运行 openclaw onboard 初始化配置"
-        exit 1
-    fi
     node -e "
       const fs = require('fs');
       const cfg = JSON.parse(fs.readFileSync('$OPENCLAW_CONFIG', 'utf-8'));
@@ -64,24 +73,20 @@ disable_markdown() {
 
 show_status() {
     echo "当前 Markdown 配置状态:"
+    echo "  配置文件: $OPENCLAW_CONFIG"
     echo ""
-    if [ -f "$OPENCLAW_CONFIG" ]; then
-        current=$(node -e "
-          const cfg = JSON.parse(require('fs').readFileSync('$OPENCLAW_CONFIG', 'utf-8'));
-          console.log(cfg.channels?.qqbot?.markdownSupport ?? '未设置');
-        " 2>/dev/null || echo "未设置")
-        if [ "$current" = "true" ]; then
-            echo "  状态: ✅ 已启用"
-            echo ""
-            echo "  ⚠️  请确保您已在 QQ 开放平台申请了 Markdown 消息权限。"
-        elif [ "$current" = "false" ]; then
-            echo "  状态: ❌ 已禁用（纯文本模式）"
-        else
-            echo "  状态: 未设置（默认: 禁用）"
-        fi
+    current=$(node -e "
+      const cfg = JSON.parse(require('fs').readFileSync('$OPENCLAW_CONFIG', 'utf-8'));
+      console.log(cfg.channels?.qqbot?.markdownSupport ?? '未设置');
+    " 2>/dev/null || echo "未设置")
+    if [ "$current" = "true" ]; then
+        echo "  状态: ✅ 已启用"
+        echo ""
+        echo "  ⚠️  请确保您已在 QQ 开放平台申请了 Markdown 消息权限。"
+    elif [ "$current" = "false" ]; then
+        echo "  状态: ❌ 已禁用（纯文本模式）"
     else
-        echo "  错误: 配置文件不存在: $OPENCLAW_CONFIG"
-        exit 1
+        echo "  状态: 未设置（默认: 禁用）"
     fi
 }
 
@@ -103,7 +108,7 @@ interactive_select() {
     echo "  2) 禁用 Markdown（纯文本）"
     echo "  3) 取消"
     echo ""
-    read -p "请选择 [1-3] (默认: 2): " choice
+    read -t 10 -p "请选择 [1-3] (默认: 2): " choice || choice="2"
     
     case "$choice" in
         1)

@@ -357,8 +357,8 @@ STT 支持两级配置，按优先级查找：
 > npm 包即将发布，届时可通过以下方式安装和升级：
 >
 > ```bash
-> openclaw plugins install @tencent-connect/openclaw-qq@latest
-> openclaw plugins upgrade @tencent-connect/openclaw-qq@latest
+> openclaw plugins install openclaw-qqbot@latest
+> openclaw plugins upgrade openclaw-qqbot@latest
 > ```
 
 ### 通过 upgrade-and-run.sh 一键升级

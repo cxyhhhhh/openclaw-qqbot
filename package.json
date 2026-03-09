@@ -1,11 +1,11 @@
 {
-  "name": "@tencent-connect/qqbot",
-  "version": "1.5.4",
+  "name": "qqbot",
+  "version": "1.5.5",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "qqbot": "./bin/qqbot-cli.js"
+    "openclaw-qqbot": "./bin/qqbot-cli.js"
   },
   "files": [
     "dist",
@@ -62,7 +62,11 @@
     "moltbot": "*",
     "openclaw": "*"
   },
-  "homepage": "https://github.com/tencent-connect/openclaw-qq",
+  "homepage": "https://github.com/tencent-connect/openclaw-qqbot",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tencent-connect/openclaw-qqbot.git"
+  },
   "bundleDependencies": [
     "mpg123-decoder",
     "silk-wasm",

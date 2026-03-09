@@ -4,8 +4,8 @@
  * QQBot CLI - 用于升级和管理 QQBot 插件
  * 
  * 用法:
- *   npx @tencent-connect/openclaw-qq upgrade    # 升级插件
- *   npx @tencent-connect/openclaw-qq install    # 安装插件
+ *   npx openclaw-qqbot upgrade    # 升级插件
+ *   npx openclaw-qqbot install    # 安装插件
  */
 
 import { execSync } from 'child_process';
@@ -36,7 +36,7 @@ function detectInstallation() {
 }
 
 // 需要清理的所有可能的插件 ID / 包名（原仓库 + 本仓库 + 框架推断名）
-const PLUGIN_IDS = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/openclaw-qq'];
+const PLUGIN_IDS = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/openclaw-qq', 'openclaw-qqbot'];
 // 可能的扩展目录名
 const EXTENSION_DIR_NAMES = ['qqbot', 'openclaw-qq'];
 
@@ -151,7 +151,7 @@ function upgrade() {
 
   // 自动安装插件
   console.log('\n[1/2] 安装新版本插件...');
-  runCommand(foundInstallation, ['plugins', 'install', '@tencent-connect/openclaw-qq']);
+  runCommand(foundInstallation, ['plugins', 'install', 'openclaw-qqbot']);
 
   // 自动配置通道（使用保存的 appId 和 clientSecret）
   console.log('\n[2/2] 配置机器人通道...');
@@ -200,15 +200,15 @@ function showHelp() {
 QQBot CLI - QQ机器人插件管理工具
 
 用法:
-  npx @tencent-connect/openclaw-qq <命令>
+  npx openclaw-qqbot <命令>
 
 命令:
   upgrade       清理旧版本插件（升级前执行）
   install       安装插件到 openclaw/clawdbot
 
 示例:
-  npx @tencent-connect/openclaw-qq upgrade
-  npx @tencent-connect/openclaw-qq install
+  npx openclaw-qqbot upgrade
+  npx openclaw-qqbot install
 `);
 }
 

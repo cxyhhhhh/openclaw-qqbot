@@ -56,7 +56,7 @@ function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
   const configPath = path.join(process.env.HOME || "/home/ubuntu", "clawd", "config.json");
   
   try {
-    if (!fs.existsSync(configPath)) {
+    if (!configPath || !fs.existsSync(configPath)) {
       // 尝试从环境变量获取
       const appId = process.env.QQBOT_APP_ID;
       const clientSecret = process.env.QQBOT_CLIENT_SECRET;
@@ -200,10 +200,10 @@ QQBot 主动消息 CLI 工具
     }
     
     // 加载配置用于广播
-    const configPath = path.join(process.env.HOME || "/home/ubuntu", "clawd", "config.json");
+    const configPath = detectConfigPath();
     let cfg: Record<string, unknown> = {};
     try {
-      if (fs.existsSync(configPath)) {
+      if (configPath && fs.existsSync(configPath)) {
         cfg = JSON.parse(fs.readFileSync(configPath, "utf-8"));
       }
     } catch {}

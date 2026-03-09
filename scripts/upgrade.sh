@@ -47,7 +47,7 @@ cleanup_installation() {
     node -e "
       const fs = require('fs');
       const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
-      const ids = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/openclaw-qq'];
+      const ids = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/openclaw-qq', 'openclaw-qqbot'];
       
       for (const id of ids) {
         // 删除 channels.<id>
@@ -112,7 +112,7 @@ echo ""
 echo "=== 清理完成 ==="
 echo ""
 echo "接下来请执行以下命令重新安装插件:"
-echo "  cd /path/to/openclaw-qq"
+echo "  cd /path/to/openclaw-qqbot"
 echo "  $CMD plugins install ."
 echo "  $CMD channels add --channel qqbot --token \"AppID:AppSecret\""
 echo "  $CMD gateway restart"
