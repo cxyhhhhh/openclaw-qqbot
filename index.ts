@@ -3,9 +3,10 @@ import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 
 import { qqbotPlugin } from "./src/channel.js";
 import { setQQBotRuntime } from "./src/runtime.js";
-import { registerGuildListTool } from "./src/tools/guild-list.js";
+import { registerGuildTools } from "./src/tools/guild-list.js";
 import { registerChannelTools } from "./src/tools/channel-list.js";
 import { registerGuildAnnouncesTool } from "./src/tools/guild-announces.js";
+import { registerGuildMemberTools } from "./src/tools/guild-member.js";
 // import { registerScheduleTools } from "./src/tools/schedule.js";
 import { registerForumThreadTools } from "./src/tools/forum-thread.js";
 
@@ -17,9 +18,10 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     setQQBotRuntime(api.runtime);
     api.registerChannel({ plugin: qqbotPlugin });
-    registerGuildListTool(api);
+    registerGuildTools(api);
     registerChannelTools(api);
     registerGuildAnnouncesTool(api);
+    registerGuildMemberTools(api);
     // registerScheduleTools(api);
     registerForumThreadTools(api);
   },

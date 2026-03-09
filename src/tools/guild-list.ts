@@ -72,19 +72,51 @@ async function getGuildList(
   return apiRequest<Guild[]>(accessToken, "GET", path);
 }
 
+// ========== API 权限类型 ==========
+
+interface APIPermission {
+  path: string;
+  method: string;
+  desc: string;
+  auth_status: number;
+}
+
+interface APIPermissionResponse {
+  apis: APIPermission[];
+}
+
+interface GuildApiPermissionParams {
+  guild_id: string;
+}
+
+const GuildApiPermissionSchema = {
+  type: "object",
+  properties: {
+    guild_id: {
+      type: "string",
+      description: "频道 ID，可通过 qqbot_guild_list 工具获取",
+    },
+  },
+  required: ["guild_id"],
+} as const;
+
+// ========== 注册入口 ==========
+
 /**
- * 注册 qqbot_guild_list 工具
+ * 注册所有频道级工具：
+ * - qqbot_guild_list: 获取机器人加入的频道列表
+ * - qqbot_guild_api_permission: 获取机器人在频道可用权限列表
  */
-export function registerGuildListTool(api: OpenClawPluginApi): void {
+export function registerGuildTools(api: OpenClawPluginApi): void {
   const cfg = api.config;
   if (!cfg) {
-    api.logger.debug?.("qqbot_guild_list: No config available, skipping");
+    api.logger.debug?.("guild: No config available, skipping");
     return;
   }
 
   const accountIds = listQQBotAccountIds(cfg);
   if (accountIds.length === 0) {
-    api.logger.debug?.("qqbot_guild_list: No QQBot accounts configured, skipping");
+    api.logger.debug?.("guild: No QQBot accounts configured, skipping");
     return;
   }
 
@@ -92,9 +124,11 @@ export function registerGuildListTool(api: OpenClawPluginApi): void {
   const account = resolveQQBotAccount(cfg, firstAccountId);
 
   if (!account.appId || !account.clientSecret) {
-    api.logger.debug?.("qqbot_guild_list: Account not fully configured, skipping");
+    api.logger.debug?.("guild: Account not fully configured, skipping");
     return;
   }
+
+  // ---- 频道列表 ----
 
   api.registerTool(
     {
@@ -127,5 +161,47 @@ export function registerGuildListTool(api: OpenClawPluginApi): void {
     { name: "qqbot_guild_list" },
   );
 
-  api.logger.info?.("qqbot_guild_list: Registered qqbot_guild_list tool");
+  // ---- 频道 API 权限列表 ----
+
+  api.registerTool(
+    {
+      name: "qqbot_guild_api_permission",
+      label: "QQBot Guild API Permission",
+      description:
+        "获取机器人在指定频道内可以使用的权限列表。" +
+        "需要提供频道 guild_id。" +
+        "返回 apis 数组，每项包含接口路径 path、请求方法 method、接口描述 desc、授权状态 auth_status（0=未授权, 1=已授权）。",
+      parameters: GuildApiPermissionSchema,
+      async execute(_toolCallId, params) {
+        const p = params as GuildApiPermissionParams;
+
+        if (!p.guild_id) {
+          return json({ error: "guild_id 为必填参数" });
+        }
+
+        try {
+          const accessToken = await getAccessToken(account.appId, account.clientSecret);
+          const result = await apiRequest<APIPermissionResponse>(
+            accessToken,
+            "GET",
+            `/guilds/${p.guild_id}/api_permission`,
+          );
+          return json(result);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const errStack = err instanceof Error ? err.stack : undefined;
+          api.logger.error?.(
+            `qqbot_guild_api_permission: Failed to get api permissions for guild ${p.guild_id}: ${errMsg}`,
+          );
+          if (errStack) {
+            api.logger.error?.(`qqbot_guild_api_permission: Stack trace:\n${errStack}`);
+          }
+          return json({ error: errMsg });
+        }
+      },
+    },
+    { name: "qqbot_guild_api_permission" },
+  );
+
+  api.logger.info?.("guild: Registered all guild tools");
 }
