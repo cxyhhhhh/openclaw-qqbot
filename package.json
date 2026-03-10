@@ -1,6 +1,6 @@
 {
   "name": "@tencent-connect/openclaw-qqbot",
-  "version": "1.5.6",
+  "version": "1.5.5",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -45,13 +45,11 @@
   },
   "dependencies": {
     "mpg123-decoder": "^1.0.3",
-    "node-edge-tts": "^1.2.10",
     "silk-wasm": "^3.7.1",
     "ws": "^8.18.0"
   },
   "bundledDependencies": [
     "mpg123-decoder",
-    "node-edge-tts",
     "silk-wasm",
     "ws"
   ],
@@ -72,7 +70,6 @@
   },
   "bundleDependencies": [
     "mpg123-decoder",
-    "node-edge-tts",
     "silk-wasm",
     "ws"
   ]
