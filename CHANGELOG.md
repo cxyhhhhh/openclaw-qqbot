@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [1.5.5] - 2026-03-09
 
+### Added
+
+- Add `npm-upgrade.sh` script for npm-based plugin installation and upgrade.
+  - Supports `--tag` and `--version` options, defaults to `@alpha`.
+  - Handles channel config backup/restore, old plugin cleanup (including legacy variants like `qqbot`, `@sliverp/qqbot`, `openclaw-qq`), and gateway restart.
+  - Temporarily removes `channels.qqbot` before install to avoid `unknown channel id` validation error.
+
 ### Fixed
 
 - Fix plugin id not matching package name, causing plugin load failure.

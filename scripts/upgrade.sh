@@ -19,7 +19,7 @@ detect_installation() {
 }
 
 # 可能的扩展目录名（原仓库 qqbot + 本仓库框架推断名 openclaw-qq）
-EXTENSION_DIRS=("qqbot" "openclaw-qq")
+EXTENSION_DIRS=("qqbot" "openclaw-qq" "openclaw-qqbot")
 
 # 清理指定目录的函数
 cleanup_installation() {
@@ -47,7 +47,7 @@ cleanup_installation() {
     node -e "
       const fs = require('fs');
       const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
-      const ids = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/openclaw-qq', 'openclaw-qqbot'];
+      const ids = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/qqbot', '@tencent-connect/openclaw-qq', '@tencent-connect/openclaw-qqbot', 'openclaw-qqbot'];
       
       for (const id of ids) {
         // 删除 channels.<id>
@@ -66,6 +66,15 @@ cleanup_installation() {
         if (config.plugins && config.plugins.installs && config.plugins.installs[id]) {
           delete config.plugins.installs[id];
           console.log('  - 已删除 plugins.installs.' + id);
+        }
+
+        // 删除 plugins.allow 中的 <id>
+        if (config.plugins && Array.isArray(config.plugins.allow)) {
+          const before = config.plugins.allow.length;
+          config.plugins.allow = config.plugins.allow.filter((x) => x !== id);
+          if (config.plugins.allow.length !== before) {
+            console.log('  - 已删除 plugins.allow 项: ' + id);
+          }
         }
       }
       

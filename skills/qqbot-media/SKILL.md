@@ -74,7 +74,7 @@ metadata: {"openclaw":{"emoji":"📸","requires":{"config":["channels.qqbot"]}}}
 <qqvoice>/tmp/tts/voice.mp3</qqvoice>
 ```
 
-注意：语音发送需要有可用的音频文件（通常由 TTS 工具生成）。**如果会话上下文中的【语音消息说明】提示 TTS 未配置，则不要使用 `<qqvoice>` 标签。**
+注意：语音发送需要有可用的音频文件（通常由 TTS 工具生成）。`<qqvoice>` 标签本身只负责发送已有音频文件，不依赖插件 TTS 配置；**但如果没有任何 TTS 工具可用来生成音频，则无法主动发送语音。** 发送语音时，不要同时输出语音内容的文字版重复。
 
 ## 发送视频
 

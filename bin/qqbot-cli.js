@@ -36,9 +36,9 @@ function detectInstallation() {
 }
 
 // 需要清理的所有可能的插件 ID / 包名（原仓库 + 本仓库 + 框架推断名）
-const PLUGIN_IDS = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/openclaw-qq', 'openclaw-qqbot'];
+const PLUGIN_IDS = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/openclaw-qq', '@tencent-connect/qqbot', '@tencent-connect/openclaw-qqbot', 'openclaw-qqbot'];
 // 可能的扩展目录名
-const EXTENSION_DIR_NAMES = ['qqbot', 'openclaw-qq'];
+const EXTENSION_DIR_NAMES = ['qqbot', 'openclaw-qq', 'openclaw-qqbot'];
 
 // 清理旧版本插件，返回旧的 qqbot 配置
 function cleanupInstallation(appName) {
@@ -95,6 +95,15 @@ function cleanupInstallation(appName) {
         if (config.plugins?.installs?.[id]) {
           delete config.plugins.installs[id];
           console.log(`  - 已删除 plugins.installs.${id}`);
+        }
+
+        // 删除 plugins.allow 中的 <id>
+        if (Array.isArray(config.plugins?.allow)) {
+          const before = config.plugins.allow.length;
+          config.plugins.allow = config.plugins.allow.filter((x) => x !== id);
+          if (config.plugins.allow.length !== before) {
+            console.log(`  - 已删除 plugins.allow.${id}`);
+          }
         }
       }
 
@@ -187,7 +196,7 @@ function install() {
   }
 
   console.log(`\n使用 ${cmd} 安装插件...`);
-  runCommand(cmd, ['plugins', 'install', '@tencent-connect/openclaw-qq']);
+  runCommand(cmd, ['plugins', 'install', '@tencent-connect/openclaw-qqbot']);
 
   console.log('\n=== 安装完成 ===');
   console.log('\n请配置机器人通道:');

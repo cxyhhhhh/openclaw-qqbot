@@ -102,7 +102,7 @@ PROJ_DIR=""
 FRESH_INSTALL=false
 
 for app in "${SUPPORTED_CLIS[@]}"; do
-    for plugin_dir in qqbot openclaw-qq; do
+    for plugin_dir in openclaw-qqbot qqbot openclaw-qq; do
         ext_dir="$HOME/.$app/extensions/$plugin_dir"
         if [ -d "$ext_dir" ] && [ -f "$ext_dir/package.json" ]; then
             PROJ_DIR="$ext_dir"
@@ -112,7 +112,7 @@ for app in "${SUPPORTED_CLIS[@]}"; do
 done
 
 if [ -z "$PROJ_DIR" ]; then
-    PROJ_DIR="$APP_HOME/extensions/qqbot"
+    PROJ_DIR="$APP_HOME/extensions/openclaw-qqbot"
     FRESH_INSTALL=true
     echo "  插件   未安装（首次安装）"
 else
@@ -148,7 +148,7 @@ for app in "${SUPPORTED_CLIS[@]}"; do
     SAVED_CHANNELS_JSON=$(node -e "
         const cfg = JSON.parse(require('fs').readFileSync('$cfg', 'utf8'));
         // 尝试所有可能的 channel key（原仓库 + 本仓库）
-        const keys = ['qqbot', 'openclaw-qq'];
+        const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
         for (const key of keys) {
             const ch = cfg.channels && cfg.channels[key];
             if (ch) { process.stdout.write(JSON.stringify(ch)); process.exit(0); }

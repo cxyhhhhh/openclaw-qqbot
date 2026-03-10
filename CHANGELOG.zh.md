@@ -6,6 +6,13 @@
 
 ## [1.5.5] - 2026-03-09
 
+### 新增
+
+- 新增 `npm-upgrade.sh` 脚本，支持通过 npm 包安装和升级插件。
+  - 支持 `--tag` 和 `--version` 选项，默认安装 `@alpha`。
+  - 自动处理通道配置备份/恢复、旧插件清理（包括 `qqbot`、`@sliverp/qqbot`、`openclaw-qq` 等历史版本）、网关重启。
+  - 安装前临时移除 `channels.qqbot` 配置，避免 `unknown channel id` 校验错误。
+
 ### 修复
 
 - 修复插件 ID 与包名不一致导致插件加载失败的问题。

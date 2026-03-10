@@ -818,7 +818,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 2. 示例: "来听听吧！ <qqvoice>/tmp/tts/voice.mp3</qqvoice>"
 3. 支持格式: .silk, .slk, .slac, .amr, .wav, .mp3, .ogg, .pcm
 4. ⚠️ <qqvoice> 只用于语音文件，图片请用 <qqimg>；两者不要混用
-5. 可以同时发送文字和语音，系统会按顺序投递
+5. 发送语音时，不要重复输出语音中已朗读的文字内容；语音前后的文字应是补充信息而非语音的文字版重复
 ${ttsHint}${sttHint}`;
 
         const contextInfo = `你正在通过 QQ 与用户对话。
@@ -970,8 +970,31 @@ ${ttsHint}${sttHint}`;
 
           // 追踪是否有响应
           let hasResponse = false;
+          let hasBlockResponse = false; // 是否收到了面向用户的 block 回复
+          let toolDeliverCount = 0; // tool deliver 计数
+          const toolTexts: string[] = []; // 收集所有 tool deliver 文本（用于格式化展示）
+          let toolFallbackSent = false; // 兜底消息是否已发送（只发一次）
           const responseTimeout = 120000; // 120秒超时（2分钟，与 TTS/文件生成超时对齐）
+          const toolOnlyTimeout = 60000; // tool-only 兜底超时：60秒内没有 block 就兜底
+          const maxToolRenewals = 3; // tool 续期上限：最多续期 3 次（总等待 = 60s × 3 = 180s）
+          let toolRenewalCount = 0; // 已续期次数
           let timeoutId: ReturnType<typeof setTimeout> | null = null;
+          let toolOnlyTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+          // 格式化 tool 兜底消息：极简，只展示工具原始参数
+          const formatToolFallback = (): string => {
+            if (toolTexts.length === 0) {
+              return "🔧 调用工具中…";
+            }
+            const recentTools = toolTexts.slice(-3);
+            const totalLen = recentTools.reduce((s, t) => s + t.length, 0);
+            if (totalLen > 1800) {
+              const last = recentTools[recentTools.length - 1]!;
+              return `🔧 调用工具中…\n\`\`\`\n${last.slice(0, 1500)}\n\`\`\``;
+            }
+            const toolBlock = recentTools.join("\n---\n");
+            return `🔧 调用工具中…\n\`\`\`\n${toolBlock}\n\`\`\``;
+          };
 
           const timeoutPromise = new Promise<void>((_, reject) => {
             timeoutId = setTimeout(() => {
@@ -994,20 +1017,71 @@ ${ttsHint}${sttHint}`;
               responsePrefix: messagesConfig.responsePrefix,
               deliver: async (payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string }, info: { kind: string }) => {
                 hasResponse = true;
+
+                log?.info(`[qqbot:${account.accountId}] deliver called, kind: ${info.kind}, payload keys: ${Object.keys(payload).join(", ")}`);
+
+                // ============ 跳过工具调用的中间结果（带兜底保护） ============
+                if (info.kind === "tool") {
+                  toolDeliverCount++;
+                  const toolText = (payload.text ?? "").trim();
+                  if (toolText) {
+                    toolTexts.push(toolText);
+                  }
+                  log?.info(`[qqbot:${account.accountId}] Skipping tool result deliver #${toolDeliverCount} (intermediate, not user-facing), text length: ${toolText.length}`);
+
+                  // 兜底已发送，不再续期
+                  if (toolFallbackSent) {
+                    return;
+                  }
+
+                  // tool-only 超时保护：收到 tool 但迟迟没有 block 时，启动兜底定时器
+                  // 续期有上限（maxToolRenewals 次），防止无限工具调用永远不触发兜底
+                  if (toolOnlyTimeoutId) {
+                    if (toolRenewalCount < maxToolRenewals) {
+                      clearTimeout(toolOnlyTimeoutId);
+                      toolRenewalCount++;
+                      log?.info(`[qqbot:${account.accountId}] Tool-only timer renewed (${toolRenewalCount}/${maxToolRenewals})`);
+                    } else {
+                      // 已达续期上限，不再重置，等定时器自然触发兜底
+                      log?.info(`[qqbot:${account.accountId}] Tool-only timer renewal limit reached (${maxToolRenewals}), waiting for timeout`);
+                      return;
+                    }
+                  }
+                  toolOnlyTimeoutId = setTimeout(async () => {
+                    if (!hasBlockResponse && !toolFallbackSent) {
+                      toolFallbackSent = true;
+                      log?.error(`[qqbot:${account.accountId}] Tool-only timeout: ${toolDeliverCount} tool deliver(s) but no block within ${toolOnlyTimeout / 1000}s, sending fallback`);
+                      const fallback = formatToolFallback();
+                      try {
+                        await sendWithTokenRetry(async (token) => {
+                          if (event.type === "c2c") {
+                            await sendC2CMessage(token, event.senderId, fallback, event.messageId);
+                          } else if (event.type === "group" && event.groupOpenid) {
+                            await sendGroupMessage(token, event.groupOpenid, fallback, event.messageId);
+                          } else if (event.channelId) {
+                            await sendChannelMessage(token, event.channelId, fallback, event.messageId);
+                          }
+                        });
+                      } catch (sendErr) {
+                        log?.error(`[qqbot:${account.accountId}] Failed to send tool-only fallback: ${sendErr}`);
+                      }
+                    }
+                  }, toolOnlyTimeout);
+                  return;
+                }
+
+                // 收到 block 回复，清除所有超时定时器
+                hasBlockResponse = true;
                 if (timeoutId) {
                   clearTimeout(timeoutId);
                   timeoutId = null;
                 }
-
-                log?.info(`[qqbot:${account.accountId}] deliver called, kind: ${info.kind}, payload keys: ${Object.keys(payload).join(", ")}`);
-
-                // ============ 跳过工具调用的中间结果 ============
-                // kind: "tool" 是 AI 调用工具后框架返回的中间结果（如 TTS 生成的音频路径），
-                // 不应直接发送给用户。AI 会在后续的 "block" deliver 中用 <qqvoice> 等标签
-                // 正确地引用这些文件并发送。
-                if (info.kind === "tool") {
-                  log?.info(`[qqbot:${account.accountId}] Skipping tool result deliver (intermediate, not user-facing)`);
-                  return;
+                if (toolOnlyTimeoutId) {
+                  clearTimeout(toolOnlyTimeoutId);
+                  toolOnlyTimeoutId = null;
+                }
+                if (toolDeliverCount > 0) {
+                  log?.info(`[qqbot:${account.accountId}] Block deliver after ${toolDeliverCount} tool deliver(s)`);
                 }
 
                 let replyText = payload.text ?? "";
@@ -1987,10 +2061,9 @@ ${ttsHint}${sttHint}`;
                 // 发送错误提示给用户，显示完整错误信息
                 const errMsg = String(err);
                 if (errMsg.includes("401") || errMsg.includes("key") || errMsg.includes("auth")) {
-                  await sendErrorMessage("大模型 API Key 可能无效，请检查配置");
+                  await sendErrorMessage("⚠️ AI 服务认证失败，API Key 可能无效，请联系管理员检查配置。");
                 } else {
-                  // 显示完整错误信息，截取前 500 字符
-                  await sendErrorMessage(`出错: ${errMsg.slice(0, 500)}`);
+                  await sendErrorMessage(`⚠️ AI 处理出错: ${errMsg.slice(0, 500)}`);
                 }
               },
             },
@@ -2008,12 +2081,25 @@ ${ttsHint}${sttHint}`;
             }
             if (!hasResponse) {
               log?.error(`[qqbot:${account.accountId}] No response within timeout`);
-              await sendErrorMessage("QQ已经收到了你的请求并转交给了Openclaw，任务可能比较复杂，正在处理中...");
+              await sendErrorMessage("⏳ 已收到，正在处理中…");
+            }
+          } finally {
+            // 清理 tool-only 兜底定时器
+            if (toolOnlyTimeoutId) {
+              clearTimeout(toolOnlyTimeoutId);
+              toolOnlyTimeoutId = null;
+            }
+            // dispatch 完成后，如果只有 tool 没有 block，且尚未发过兜底，立即兜底
+            if (toolDeliverCount > 0 && !hasBlockResponse && !toolFallbackSent) {
+              toolFallbackSent = true;
+              log?.error(`[qqbot:${account.accountId}] Dispatch completed with ${toolDeliverCount} tool deliver(s) but no block deliver, sending fallback`);
+              const fallback = formatToolFallback();
+              await sendErrorMessage(fallback);
             }
           }
         } catch (err) {
           log?.error(`[qqbot:${account.accountId}] Message processing failed: ${err}`);
-          await sendErrorMessage(`处理失败: ${String(err).slice(0, 500)}`);
+          await sendErrorMessage(`⚠️ 消息处理失败: ${String(err).slice(0, 500)}`);
         }
       };
 
