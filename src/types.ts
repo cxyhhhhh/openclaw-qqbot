@@ -23,6 +23,8 @@ export interface ResolvedQQBotAccount {
   imageServerBaseUrl?: string;
   /** 是否支持 markdown 消息（默认 true） */
   markdownSupport: boolean;
+  /** 是否启用流式回复（默认 true） */
+  enableStreamReply: boolean;
   config: QQBotAccountConfig;
 }
 
@@ -43,6 +45,13 @@ export interface QQBotAccountConfig {
   imageServerBaseUrl?: string;
   /** 是否支持 markdown 消息（默认 true，设为 false 可禁用） */
   markdownSupport?: boolean;
+  /** 是否启用流式回复（默认 true，设为 false 则使用普通消息回复） */
+  enableStreamReply?: boolean;
+  /**
+   * 流式发送配置
+   * 用于调整流式消息的发送行为
+   */
+  stream?: QQBotStreamConfig;
   /**
    * @deprecated 请使用 audioFormatPolicy.uploadDirectFormats
    * 可直接上传的音频格式（不转换为 SILK），向后兼容
@@ -53,6 +62,28 @@ export interface QQBotAccountConfig {
    * 统一管理入站（STT）和出站（上传）的音频格式转换行为
    */
   audioFormatPolicy?: AudioFormatPolicy;
+}
+
+/**
+ * 流式发送配置
+ */
+export interface QQBotStreamConfig {
+  /** 首包快速发送间隔（ms），默认 200 */
+  firstSendInterval?: number;
+  /** 常规发送间隔（ms），默认 500 */
+  sendInterval?: number;
+  /** 快速发送次数，达到后切换为常规间隔，默认 10 */
+  fastSendCount?: number;
+  /** 字节阈值，缓冲区超过此值立即发送，默认 500 */
+  sendBytesThreshold?: number;
+  /** 空白保活间隔（ms），默认 3000 */
+  blankSendInterval?: number;
+  /** 全局节流间隔（ms），控制 API 调用频率上限，默认 1000 */
+  throttleMs?: number;
+  /** 首次发送最小字符数，默认 30（优化推送通知体验） */
+  minInitialChars?: number;
+  /** 单条流式消息最大字符数，默认 4096，超限后停止流式发送 */
+  maxChars?: number;
 }
 
 /**

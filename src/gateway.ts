@@ -13,6 +13,7 @@ import { convertSilkToWav, isVoiceAttachment, formatDuration, resolveTTSConfig, 
 import { normalizeMediaTags } from "./utils/media-tags.js";
 import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize } from "./utils/file-utils.js";
 import { getQQBotDataDir, isLocalPath as isLocalFilePath, looksLikeLocalPath, normalizePath, sanitizeFileName, runDiagnostics } from "./utils/platform.js";
+import { StreamSender, type StreamTarget, type StreamSenderConfig } from "./stream-sender.js";
 
 /**
  * 通用 OpenAI 兼容 STT（语音转文字）
@@ -269,7 +270,7 @@ function filterInternalMarkers(text: string): string {
   // 例如: [[reply_to: ROBOT1.0_kbc...]]
   let result = text.replace(/\[\[[a-z_]+:\s*[^\]]*\]\]/gi, "");
   
-  // 清理可能产生的多余空行
+  // 清理可能产生的多余空行（3 个以上连续换行压缩为 2 个）
   result = result.replace(/\n{3,}/g, "\n\n").trim();
   
   return result;
@@ -1104,6 +1105,51 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                         : event.type === "group" ? `group:${event.groupOpenid}`
                         : `channel:${event.channelId}`;
 
+          // ============ 流式消息发送器 ============
+          // 创建 StreamSender 实例：将框架逐块 deliver 的内容通过 QQ 流式消息协议发送
+          // 仅 c2c 和 group 支持流式，channel 暂不支持
+          const streamTarget: StreamTarget = {
+            type: event.type === "c2c" ? "c2c" : event.type === "group" ? "group" : "channel",
+            id: event.type === "c2c" ? event.senderId
+              : event.type === "group" ? (event.groupOpenid ?? "")
+              : (event.channelId ?? ""),
+            messageId: event.messageId,
+          };
+
+          // 读取流式配置（可通过 channels.qqbot.stream 自定义）
+          const streamConfig = (cfg as Record<string, unknown>)?.channels as Record<string, unknown> | undefined;
+          const qqbotStreamCfg = (streamConfig?.qqbot as Record<string, unknown>)?.stream as Record<string, unknown> | undefined;
+
+          const streamSenderConfig: StreamSenderConfig = {
+            appId: account.appId,
+            clientSecret: account.clientSecret,
+            ...(qqbotStreamCfg?.firstSendInterval != null && { firstSendInterval: qqbotStreamCfg.firstSendInterval as number }),
+            ...(qqbotStreamCfg?.sendInterval != null && { sendInterval: qqbotStreamCfg.sendInterval as number }),
+            ...(qqbotStreamCfg?.fastSendCount != null && { fastSendCount: qqbotStreamCfg.fastSendCount as number }),
+            ...(qqbotStreamCfg?.sendBytesThreshold != null && { sendBytesThreshold: qqbotStreamCfg.sendBytesThreshold as number }),
+            ...(qqbotStreamCfg?.blankSendInterval != null && { blankSendInterval: qqbotStreamCfg.blankSendInterval as number }),
+            ...(qqbotStreamCfg?.throttleMs != null && { throttleMs: qqbotStreamCfg.throttleMs as number }),
+            ...(qqbotStreamCfg?.minInitialChars != null && { minInitialChars: qqbotStreamCfg.minInitialChars as number }),
+            ...(qqbotStreamCfg?.maxChars != null && { maxChars: qqbotStreamCfg.maxChars as number }),
+            log: {
+              info: (msg: string) => log?.info(msg),
+              error: (msg: string) => log?.error(msg),
+              debug: (msg: string) => log?.debug?.(msg),
+            },
+          };
+
+          // 是否启用 QQ 流式协议发送：仅 c2c（私聊）+ markdown 模式 + enableStreamReply 配置下启用
+          // 注意：QQ 流式消息协议仅支持 C2C 类型，群聊不支持
+          // QQ 流式回复采用 Draft Streaming 模式：
+          //   - 通过 replyOptions.onPartialReply 接收 token 级增量文本（累积全文快照）
+          //   - 驱动 StreamSender 在同一条流式消息上持续追加内容（类似 Telegram editMessageText）
+          //   - disableBlockStreaming: true 禁用框架块流式，避免 double-streaming
+          //   - deliver 的 kind="final" 时：如果 draft 流已发送完毕则跳过，否则走普通发送
+          // 多段落（含媒体标签）仍通过 channel capabilities blockStreaming: true 支持 block streaming
+          const enableQQStreaming = event.type === "c2c" && account.markdownSupport === true && account.enableStreamReply === true;
+          // 使用对象包装来避免 TypeScript 控制流分析中的 never 类型问题
+          const streamState = { sender: null as StreamSender | null, started: false, lastMsgSeqCounter: 0, hasBlockContent: false, draftFinished: false, lastPartialLength: 0, streamedTextSnapshot: "" };
+
           const dispatchPromise = pluginRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
             ctx: ctxPayload,
             cfg,
@@ -1176,6 +1222,57 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                 }
                 if (toolDeliverCount > 0) {
                   log?.info(`[qqbot:${account.accountId}] Block deliver after ${toolDeliverCount} tool deliver(s)`);
+                }
+
+                // ============ 流式消息处理 ============
+                // Draft Streaming 模式（enableQQStreaming=true）：
+                //   - onPartialReply 驱动 StreamSender（在 replyOptions 中设置）
+                //   - disableBlockStreaming: true → 不会收到 kind="block"
+                //   - deliver 只收到 kind="final"：如果 draft 流已发送内容则结束流并跳过
+                //
+                // Block Streaming 后备（enableQQStreaming=false）：
+                //   - 框架 blockStreaming: true 自动启用块流式
+                //   - kind="block" 在 deliver 中跳过，等 kind="final" 走普通发送
+
+                // kind="block" 处理（仅 enableQQStreaming=false 时可能收到）
+                if (info.kind === "block") {
+                  const blockText = payload.text ?? "";
+                  const previewText = blockText.length > 200 ? blockText.slice(0, 200) + "…" : blockText;
+                  log?.info(`[qqbot:${account.accountId}] deliver received | kind: block | len: ${blockText.length} | content: ${previewText}`);
+
+                  // enableQQStreaming 时已通过 disableBlockStreaming: true 禁用块流式，
+                  // 理论上不会收到 block kind；作为防御性处理，直接跳过
+                  if (enableQQStreaming) {
+                    log?.info(`[qqbot:${account.accountId}] Draft streaming mode, unexpected block chunk — skipping`);
+                    return;
+                  }
+
+                  // 非 QQ 流式场景：跳过 block chunk，等 final 走普通发送
+                  log?.info(`[qqbot:${account.accountId}] QQ streaming disabled, skipping block chunk`);
+                  return;
+                }
+
+                // kind="final" 处理
+                if (info.kind === "final" && enableQQStreaming && streamState.sender && streamState.started) {
+                  // Draft Streaming 模式：onPartialReply 已通过 StreamSender 发送了全部内容
+                  // 此时 final 到来 → 结束流式发送，跳过普通发送避免重复
+                  try {
+                    await streamState.sender.finish();
+                    log?.info(`[qqbot:${account.accountId}] Draft stream sender finished on final deliver`);
+                  } catch (err) {
+                    log?.error(`[qqbot:${account.accountId}] Failed to finish draft stream on final: ${err}`);
+                  }
+                  streamState.sender = null;
+                  streamState.started = false;
+                  streamState.draftFinished = true;
+
+                  // 记录活动
+                  pluginRuntime.channel.activity.record({
+                    channel: "qqbot",
+                    accountId: account.accountId,
+                    direction: "outbound",
+                  });
+                  return; // 已通过 draft 流式发送完毕，final 不再重复发送
                 }
 
                 let replyText = payload.text ?? "";
@@ -1291,26 +1388,48 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                     sendQueue.push({ type: "text", content: filterInternalMarkers(textAfter) });
                   }
                   
+                  // 如果流式发送器因媒体标签中断，跳过 sendQueue 中已通过流式发送的第一段文本
+                  if (streamState.streamedTextSnapshot && sendQueue.length > 0 && sendQueue[0].type === "text") {
+                    const firstText = sendQueue[0].content;
+                    const snapshot = streamState.streamedTextSnapshot;
+                    // 完全匹配或快照是第一段文本的前缀（流式可能已发送全部或部分）
+                    if (firstText === snapshot || snapshot.startsWith(firstText) || firstText.startsWith(snapshot)) {
+                      log?.info(`[qqbot:${account.accountId}] Skipping first text segment already sent via draft stream: "${firstText.slice(0, 60)}..."`);
+                      sendQueue.shift();
+                    }
+                    streamState.streamedTextSnapshot = ""; // 消费后清空
+                  }
+
                   log?.info(`[qqbot:${account.accountId}] Send queue: ${sendQueue.map(item => item.type).join(" -> ")}`);
                   
-                  // 按顺序发送
+                  // 发送队列分两阶段处理：
+                  // 1. 文本项立即发送（不阻塞）
+                  // 2. 媒体项（voice 有 waitForFile 等待）异步并行处理
+                  // 这样语音 TTS 生成失败/超时不会阻塞后续文本的发送
+                  const mediaPromises: Promise<void>[] = [];
+                  
+                  // 辅助：发送文本项
+                  const sendTextItem = async (content: string) => {
+                    try {
+                      await sendWithTokenRetry(async (token) => {
+                        if (event.type === "c2c") {
+                          await sendC2CMessage(token, event.senderId, content, event.messageId);
+                        } else if (event.type === "group" && event.groupOpenid) {
+                          await sendGroupMessage(token, event.groupOpenid, content, event.messageId);
+                        } else if (event.channelId) {
+                          await sendChannelMessage(token, event.channelId, content, event.messageId);
+                        }
+                      });
+                      log?.info(`[qqbot:${account.accountId}] Sent text: ${content.slice(0, 50)}...`);
+                    } catch (err) {
+                      log?.error(`[qqbot:${account.accountId}] Failed to send text: ${err}`);
+                    }
+                  };
+
                   for (const item of sendQueue) {
                     if (item.type === "text") {
-                      // 发送文本
-                      try {
-                        await sendWithTokenRetry(async (token) => {
-                          if (event.type === "c2c") {
-                            await sendC2CMessage(token, event.senderId, item.content, event.messageId);
-                          } else if (event.type === "group" && event.groupOpenid) {
-                            await sendGroupMessage(token, event.groupOpenid, item.content, event.messageId);
-                          } else if (event.channelId) {
-                            await sendChannelMessage(token, event.channelId, item.content, event.messageId);
-                          }
-                        });
-                        log?.info(`[qqbot:${account.accountId}] Sent text: ${item.content.slice(0, 50)}...`);
-                      } catch (err) {
-                        log?.error(`[qqbot:${account.accountId}] Failed to send text: ${err}`);
-                      }
+                      // 文本项：如果前面有正在等待的媒体，也先立即发送文本不等媒体
+                      await sendTextItem(item.content);
                     } else if (item.type === "image") {
                       // 发送图片（展开 ~ 路径）
                       const imagePath = normalizePath(item.content);
@@ -1397,42 +1516,45 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                         await sendErrorMessage(`图片发送失败，图片似乎不存在哦，图片路径：${imagePath}`);
                       }
                     } else if (item.type === "voice") {
-                      // 发送语音文件（展开 ~ 路径）
+                      // 语音发送异步化：waitForFile + SILK 转换可能耗时很长（TTS 生成失败时最多等 2 分钟），
+                      // 推入 mediaPromises 不阻塞后续文本项的发送
                       const voicePath = normalizePath(item.content);
-                      try {
-                        // 等待文件就绪（TTS 工具异步生成，文件可能还没写完）
-                        const fileSize = await waitForFile(voicePath);
-                        if (fileSize === 0) {
-                          log?.error(`[qqbot:${account.accountId}] Voice file not ready after waiting: ${voicePath}`);
-                          await sendErrorMessage(`语音生成失败，请稍后重试`);
-                          continue;
-                        }
-
-                        // 转换为 SILK 格式（QQ Bot API 语音只支持 SILK），支持配置直传格式跳过转换
-                        const uploadFormats = account.config?.audioFormatPolicy?.uploadDirectFormats ?? account.config?.voiceDirectUploadFormats;
-                        const silkBase64 = await audioFileToSilkBase64(voicePath, uploadFormats);
-                        if (!silkBase64) {
-                          const ext = path.extname(voicePath).toLowerCase();
-                          log?.error(`[qqbot:${account.accountId}] Voice conversion to SILK failed: ${ext} (${fileSize} bytes). Check [audio-convert] logs for details.`);
-                          await sendErrorMessage(`语音格式转换失败，请稍后重试`);
-                          continue;
-                        }
-                        log?.info(`[qqbot:${account.accountId}] Voice file converted to SILK Base64 (${fileSize} bytes)`);
-
-                        await sendWithTokenRetry(async (token) => {
-                          if (event.type === "c2c") {
-                            await sendC2CVoiceMessage(token, event.senderId, silkBase64!, event.messageId);
-                          } else if (event.type === "group" && event.groupOpenid) {
-                            await sendGroupVoiceMessage(token, event.groupOpenid, silkBase64!, event.messageId);
-                          } else if (event.channelId) {
-                            await sendChannelMessage(token, event.channelId, `[语音消息暂不支持频道发送]`, event.messageId);
+                      mediaPromises.push((async () => {
+                        try {
+                          // 等待文件就绪（TTS 工具异步生成，文件可能还没写完）
+                          const fileSize = await waitForFile(voicePath);
+                          if (fileSize === 0) {
+                            log?.error(`[qqbot:${account.accountId}] Voice file not ready after waiting: ${voicePath}`);
+                            await sendErrorMessage(`语音生成失败，请稍后重试`);
+                            return;
                           }
-                        });
-                        log?.info(`[qqbot:${account.accountId}] Sent voice via <qqvoice> tag: ${voicePath.slice(0, 60)}...`);
-                      } catch (err) {
-                        log?.error(`[qqbot:${account.accountId}] Failed to send voice from <qqvoice>: ${err}`);
-                        await sendErrorMessage(formatMediaErrorMessage("语音", err));
-                      }
+
+                          // 转换为 SILK 格式（QQ Bot API 语音只支持 SILK），支持配置直传格式跳过转换
+                          const uploadFormats = account.config?.audioFormatPolicy?.uploadDirectFormats ?? account.config?.voiceDirectUploadFormats;
+                          const silkBase64 = await audioFileToSilkBase64(voicePath, uploadFormats);
+                          if (!silkBase64) {
+                            const ext = path.extname(voicePath).toLowerCase();
+                            log?.error(`[qqbot:${account.accountId}] Voice conversion to SILK failed: ${ext} (${fileSize} bytes). Check [audio-convert] logs for details.`);
+                            await sendErrorMessage(`语音格式转换失败，请稍后重试`);
+                            return;
+                          }
+                          log?.info(`[qqbot:${account.accountId}] Voice file converted to SILK Base64 (${fileSize} bytes)`);
+
+                          await sendWithTokenRetry(async (token) => {
+                            if (event.type === "c2c") {
+                              await sendC2CVoiceMessage(token, event.senderId, silkBase64!, event.messageId);
+                            } else if (event.type === "group" && event.groupOpenid) {
+                              await sendGroupVoiceMessage(token, event.groupOpenid, silkBase64!, event.messageId);
+                            } else if (event.channelId) {
+                              await sendChannelMessage(token, event.channelId, `[语音消息暂不支持频道发送]`, event.messageId);
+                            }
+                          });
+                          log?.info(`[qqbot:${account.accountId}] Sent voice via <qqvoice> tag: ${voicePath.slice(0, 60)}...`);
+                        } catch (err) {
+                          log?.error(`[qqbot:${account.accountId}] Failed to send voice from <qqvoice>: ${err}`);
+                          await sendErrorMessage(formatMediaErrorMessage("语音", err));
+                        }
+                      })());
                     } else if (item.type === "video") {
                       // 发送视频（支持公网 URL 和本地文件，展开 ~ 路径）
                       const videoPath = normalizePath(item.content);
@@ -1557,6 +1679,13 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                         await sendErrorMessage(`文件发送失败: ${err}`);
                       }
                     }
+                  }
+                  
+                  // 等待所有异步媒体项（voice 的 waitForFile + SILK 转换）完成
+                  if (mediaPromises.length > 0) {
+                    log?.info(`[qqbot:${account.accountId}] Waiting for ${mediaPromises.length} async media item(s) to complete...`);
+                    await Promise.allSettled(mediaPromises);
+                    log?.info(`[qqbot:${account.accountId}] All async media items settled`);
                   }
                   
                   // 记录活动并返回
@@ -2151,6 +2280,17 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   clearTimeout(timeoutId);
                   timeoutId = null;
                 }
+
+                // 如果流式发送器还在运行，强制结束
+                if (streamState.sender && streamState.started) {
+                  try {
+                    await streamState.sender.forceFinish();
+                  } catch (finishErr) {
+                    log?.error(`[qqbot:${account.accountId}] Failed to force finish stream on error: ${finishErr}`);
+                  }
+                  streamState.sender = null;
+                  streamState.started = false;
+                }
                 
                 // 发送错误提示给用户，显示完整错误信息
                 const errMsg = String(err);
@@ -2162,16 +2302,127 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
               },
             },
             replyOptions: {
-              disableBlockStreaming: false,
+              // Draft Streaming 模式：通过 onPartialReply 接收 token 级增量文本驱动 StreamSender
+              // 禁用框架块流式避免 double-streaming；非 QQ 流式场景保留框架默认 block streaming
+              ...(enableQQStreaming ? { disableBlockStreaming: true } : {}),
+              onPartialReply: enableQQStreaming
+                ? (partialPayload: { text?: string }) => {
+                    const partialText = partialPayload.text ?? "";
+                    if (!partialText.trim()) return;
+
+                    // 如果文本包含媒体标签或 payload 前缀，不走 draft streaming
+                    // 这些会在 deliver 的 final 中处理
+                    // 同时检测不完整的标签（如 <qqvoice 但 > 还没到），避免标签片段被流式发出
+                    const hasMediaTag = /<(qqimg|qqvoice|qqvideo|qqfile)>/i.test(partialText);
+                    const hasIncompleteMediaTag = !hasMediaTag && /<(qqimg|qqvoice|qqvideo|qqfile)\s*$/i.test(partialText);
+                    const hasPayloadPrefix = partialText.startsWith("QQBOT_PAYLOAD:");
+                    if (hasMediaTag || hasIncompleteMediaTag || hasPayloadPrefix) {
+                      // 如果 draft 流正在运行，先结束它，并记录已流式发送的文本快照
+                      if (streamState.sender && streamState.started) {
+                        // 使用 sender 实际已发送的完整内容作为快照，而非从 partialText 截断
+                        // 原因：当 AI 做 tool call 后新 assistant message 的首个 partial 就包含 <qqvoice> 时，
+                        // partialText 是新 message 的文本（如 "<qqvoice>..."），截断后为空字符串，
+                        // 导致 deliver(final) 中的跳过逻辑失效，第一段已流式发送的纯文本被重复发送
+                        const senderContent = streamState.sender.getFullContent();
+                        const cleanSnapshot = filterInternalMarkers(senderContent).trim();
+                        streamState.streamedTextSnapshot = cleanSnapshot;
+                        log?.info(`[qqbot:${account.accountId}] Partial contains media/payload, finishing draft stream (streamed snapshot: ${cleanSnapshot.slice(0, 80)})`);
+                        streamState.lastMsgSeqCounter = streamState.sender.getMsgSeqCounter();
+                        streamState.sender.finish().catch((err) => {
+                          log?.error(`[qqbot:${account.accountId}] Failed to finish draft stream before media: ${err}`);
+                        });
+                        streamState.sender = null;
+                        streamState.started = false;
+                      }
+                      return;
+                    }
+
+                    const cleanText = filterInternalMarkers(partialText);
+                    if (!cleanText.trim()) return;
+
+                    // 懒创建 StreamSender
+                    if (!streamState.sender) {
+                      streamState.sender = new StreamSender(streamTarget, {
+                        ...streamSenderConfig,
+                        initialMsgSeqCounter: streamState.lastMsgSeqCounter,
+                      });
+                      streamState.sender.start();
+                      streamState.started = true;
+                      streamState.lastPartialLength = 0;
+                      log?.info(`[qqbot:${account.accountId}] Draft stream sender created via onPartialReply (seqBase: ${streamState.lastMsgSeqCounter})`);
+                    }
+                    streamState.hasBlockContent = true;
+
+                    // onPartialReply 传入的是累积全文快照（每次包含从头到当前的所有文本）
+                    // StreamSender.appendContent 是追加式的，所以需要计算增量部分
+                    // 截断末尾可能正在形成的不完整媒体标签（如 <, <q, <qq, <qqvoice），
+                    // 等下次 partial 到达后再决定是标签还是普通文本
+                    const trailingTagMatch = cleanText.match(/<(?:q(?:q(?:i(?:m(?:g)?)?|v(?:o(?:i(?:c(?:e)?)?)?|i(?:d(?:e(?:o)?)?)?)?|f(?:i(?:l(?:e)?)?)?)?)?)?$/i);
+                    const safeLength = trailingTagMatch ? cleanText.length - trailingTagMatch[0].length : cleanText.length;
+                    const delta = cleanText.slice(streamState.lastPartialLength, safeLength);
+                    // 只推进到安全位置，不完整标签部分保留给下次 partial
+                    streamState.lastPartialLength = safeLength;
+                    if (delta) {
+                      streamState.sender.appendContent(delta);
+                    }
+                  }
+                : undefined,
+              // 新 assistant message 开始时（如 tool call 后），重置流式状态
+              // 避免新 message 的 partial 和旧 sender 的 lastPartialLength 混乱
+              onAssistantMessageStart: enableQQStreaming
+                ? () => {
+                    if (streamState.sender && streamState.started) {
+                      // 记录已流式发送的内容作为快照
+                      const senderContent = streamState.sender.getFullContent();
+                      const cleanSnapshot = filterInternalMarkers(senderContent).trim();
+                      if (cleanSnapshot) {
+                        streamState.streamedTextSnapshot = cleanSnapshot;
+                      }
+                      log?.info(`[qqbot:${account.accountId}] New assistant message started, finishing draft stream (streamed snapshot: ${cleanSnapshot.slice(0, 80)})`);
+                      streamState.lastMsgSeqCounter = streamState.sender.getMsgSeqCounter();
+                      streamState.sender.finish().catch((err) => {
+                        log?.error(`[qqbot:${account.accountId}] Failed to finish draft stream on assistant message start: ${err}`);
+                      });
+                      streamState.sender = null;
+                      streamState.started = false;
+                    }
+                    // 重置 partial 追踪状态，新 message 的 partial 从头累积
+                    streamState.lastPartialLength = 0;
+                  }
+                : undefined,
             },
           });
 
           // 等待分发完成或超时
           try {
             await Promise.race([dispatchPromise, timeoutPromise]);
+            // 正常完成：如果 draft 流式发送器还在运行，结束它
+            // Draft Streaming 模式下，onPartialReply 驱动 StreamSender，
+            // dispatch 结束后如果 deliver(final) 没有触发结束（如 final payload 被过滤），
+            // 需要在这里主动结束流式
+            if (streamState.sender && streamState.started) {
+              try {
+                await streamState.sender.finish();
+                log?.info(`[qqbot:${account.accountId}] Stream sender finished after dispatch completed`);
+              } catch (finishErr) {
+                log?.error(`[qqbot:${account.accountId}] Failed to finish stream after dispatch: ${finishErr}`);
+              }
+              streamState.sender = null;
+              streamState.started = false;
+            }
           } catch (err) {
             if (timeoutId) {
               clearTimeout(timeoutId);
+            }
+            // 超时或异常时清理流式发送器
+            if (streamState.sender && streamState.started) {
+              try {
+                await streamState.sender.forceFinish();
+              } catch (finishErr) {
+                log?.error(`[qqbot:${account.accountId}] Failed to force finish stream on timeout: ${finishErr}`);
+              }
+              streamState.sender = null;
+              streamState.started = false;
             }
             if (!hasResponse) {
               log?.error(`[qqbot:${account.accountId}] No response within timeout`);
