@@ -905,11 +905,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const hasAsrReferFallback = voiceTranscriptSources.includes("asr");
         if (voiceTranscripts.length > 0) {
           voiceText = voiceTranscripts.length === 1
-            ? `${voiceTranscriptSources[0] === "asr" ? "[语音消息(ASR兜底，可能不准确)]" : "[语音消息]"} ${voiceTranscripts[0]}`
+            ? `[语音消息] ${voiceTranscripts[0]}`
             : voiceTranscripts.map((t, i) => {
-                const prefix = voiceTranscriptSources[i] === "asr"
-                  ? `[语音${i + 1}(ASR兜底，可能不准确)]`
-                  : `[语音${i + 1}]`;
+                const prefix = `[语音${i + 1}]`;
                 return `${prefix} ${t}`;
               }).join("\n");
         }
@@ -1044,11 +1042,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const sttHint = hasSTT
           ? `\n7. 插件侧 STT 已配置，用户发送的语音消息会尽量自动转录`
           : `\n7. 插件侧 STT 未配置，插件不会自动转录语音消息`;
-        const asrFallbackHint = hasAsrReferFallback
-          ? `\n8. 本条消息包含平台返回的 asr_refer_text 兜底文本（低置信度）。理解用户意图时可参考，但如关键信息不明确应先追问确认。`
-          : "";
+        const asrFallbackHint = "";
         const voiceForwardHint = uniqueVoicePaths.length > 0 || uniqueVoiceUrls.length > 0
-          ? `\n9. 本条消息已附带语音文件路径/URL。若你具备 STT 能力（框架能力或 STT skill），优先直接转写音频；若无 STT 能力或转写失败，再使用 asr_refer_text（若存在）作为兜底。`
+          ? `\n9. 本条消息已附带语音文件路径/URL。若你具备 STT 能力（框架能力或 STT skill），优先直接转写音频。`
           : "";
         const voiceSection = `
 
