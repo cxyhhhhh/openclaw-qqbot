@@ -56,6 +56,8 @@ QQ quote events carry index keys (e.g. `REFIDX_xxx`) instead of full original me
 - Store path: `~/.openclaw/qqbot/data/ref-index.jsonl` (survives gateway restart).
 - Quote body may include text + media summary (image/voice/video/file).
 
+<img width="720" src="docs/images/ref_msg.png" alt="Quoted Message Context Demo" />
+
 ### 🎙️ Voice Messages (STT)
 
 With STT configured, the plugin automatically transcribes voice messages to text before passing them to AI. The whole process is transparent to the user — sending voice feels as natural as sending text.
