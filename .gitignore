@@ -8,3 +8,4 @@ package-lock.json
 openclaw.json
 *.tgz
 *.log
+pnpm-lock.yaml

@@ -2,10 +2,11 @@ import WebSocket from "ws";
 import path from "node:path";
 import * as fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent } from "./api.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
+import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
@@ -301,7 +302,55 @@ interface QueuedMessage {
   channelId?: string;
   guildId?: string;
   groupOpenid?: string;
-  attachments?: Array<{ content_type: string; url: string; filename?: string; voice_wav_url?: string; asr_refer_text?: string }>;
+  attachments?: Array<{ content_type: string; url: string; filename?: string; voice_wav_url?: string; asr_refer_text?: string  }>;
+  /** 被引用消息的 refIdx（用户引用了哪条历史消息） */
+  refMsgIdx?: string;
+  /** 当前消息自身的 refIdx（供将来被引用） */
+  msgIdx?: string;
+}
+
+/**
+ * 从 message_scene.ext 数组中解析引用索引
+ * ext 格式示例: ["", "ref_msg_idx=REFIDX_xxx", "msg_idx=REFIDX_yyy"]
+ */
+function parseRefIndices(ext?: string[]): { refMsgIdx?: string; msgIdx?: string } {
+  if (!ext || ext.length === 0) return {};
+  let refMsgIdx: string | undefined;
+  let msgIdx: string | undefined;
+  for (const item of ext) {
+    if (item.startsWith("ref_msg_idx=")) {
+      refMsgIdx = item.slice("ref_msg_idx=".length);
+    } else if (item.startsWith("msg_idx=")) {
+      msgIdx = item.slice("msg_idx=".length);
+    }
+  }
+  return { refMsgIdx, msgIdx };
+}
+
+/**
+ * 从附件列表中构建附件摘要（用于引用索引缓存）
+ * @param attachments 原始附件列表
+ * @param localPaths 与 attachments 一一对应的本地路径（下载后产生）
+ */
+function buildAttachmentSummaries(
+  attachments?: Array<{ content_type: string; url: string; filename?: string; voice_wav_url?: string }>,
+  localPaths?: Array<string | null>,
+): RefAttachmentSummary[] | undefined {
+  if (!attachments || attachments.length === 0) return undefined;
+  return attachments.map((att, idx) => {
+    const ct = att.content_type?.toLowerCase() ?? "";
+    let type: RefAttachmentSummary["type"] = "unknown";
+    if (ct.startsWith("image/")) type = "image";
+    else if (ct === "voice" || ct.startsWith("audio/") || ct.includes("silk") || ct.includes("amr")) type = "voice";
+    else if (ct.startsWith("video/")) type = "video";
+    else if (ct.startsWith("application/") || ct.startsWith("text/")) type = "file";
+    return {
+      type,
+      filename: att.filename,
+      contentType: att.content_type,
+      localPath: localPaths?.[idx] ?? undefined,
+    };
+  });
 }
 
 /**
@@ -353,6 +402,40 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     markdownSupport: account.markdownSupport,
   });
   log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}`);
+
+  // 注册出站消息 refIdx 缓存钩子
+  // 所有消息发送函数在拿到 QQ 回包后，如果含 ref_idx 则自动回调此处缓存
+  onMessageSent((refIdx, meta) => {
+    log?.info(`[qqbot:${account.accountId}] onMessageSent called: refIdx=${refIdx}, mediaType=${meta.mediaType}, ttsText=${meta.ttsText?.slice(0, 30)}`);
+    const attachments: RefAttachmentSummary[] = [];
+    if (meta.mediaType) {
+      const localPath = meta.mediaLocalPath;
+      // filename 取路径的 basename，如果没有路径信息则留空
+      const filename = localPath ? path.basename(localPath) : undefined;
+      const attachment: RefAttachmentSummary = {
+        type: meta.mediaType,
+        ...(localPath ? { localPath } : {}),
+        ...(filename ? { filename } : {}),
+        ...(meta.mediaUrl ? { url: meta.mediaUrl } : {}),
+      };
+      // 如果是语音消息且有 TTS 原文本，保存到 transcript 并标记来源为 tts
+      if (meta.mediaType === "voice" && meta.ttsText) {
+        attachment.transcript = meta.ttsText;
+        attachment.transcriptSource = "tts";
+        log?.info(`[qqbot:${account.accountId}] Saving voice transcript (TTS): ${meta.ttsText.slice(0, 50)}`);
+      }
+      attachments.push(attachment);
+    }
+    setRefIndex(refIdx, {
+      content: (meta.text ?? "").slice(0, 500),
+      senderId: account.accountId,
+      senderName: account.accountId,
+      timestamp: Date.now(),
+      isBot: true,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    });
+    log?.info(`[qqbot:${account.accountId}] Cached outbound refIdx: ${refIdx}, attachments=${JSON.stringify(attachments)}`);
+  });
 
   // TTS 配置验证
   const ttsCfg = resolveTTSConfig(cfg as Record<string, unknown>);
@@ -503,6 +586,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     stopBackgroundTokenRefresh(account.appId);
     // P1-3: 保存已知用户数据
     flushKnownUsers();
+    // P1-4: 保存引用索引数据
+    flushRefIndex();
   });
 
   const cleanup = () => {
@@ -586,6 +671,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         guildId?: string;
         groupOpenid?: string;
         attachments?: Array<{ content_type: string; url: string; filename?: string; voice_wav_url?: string; asr_refer_text?: string }>;
+        refMsgIdx?: string;
+        msgIdx?: string;
       }) => {
 
         log?.debug?.(`[qqbot:${account.accountId}] Received message: ${JSON.stringify(event)}`);
@@ -601,22 +688,26 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         });
 
         // 发送输入状态提示（非关键，失败不影响主流程）
+        // 同时从响应中获取 ref_idx，用于缓存入站消息
+        let inputNotifyRefIdx: string | undefined;
         try {
           let token = await getAccessToken(account.appId, account.clientSecret);
           try {
-            await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
+            const notifyResponse = await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
+            inputNotifyRefIdx = notifyResponse.refIdx;
           } catch (notifyErr) {
             const errMsg = String(notifyErr);
             if (errMsg.includes("token") || errMsg.includes("401") || errMsg.includes("11244")) {
               log?.info(`[qqbot:${account.accountId}] InputNotify token expired, refreshing...`);
               clearTokenCache(account.appId);
               token = await getAccessToken(account.appId, account.clientSecret);
-              await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
+              const notifyResponse = await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
+              inputNotifyRefIdx = notifyResponse.refIdx;
             } else {
               throw notifyErr;
             }
           }
-          log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}`);
+          log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}${inputNotifyRefIdx ? `, got refIdx=${inputNotifyRefIdx}` : ""}`);
         } catch (err) {
           log?.error(`[qqbot:${account.accountId}] sendC2CInputNotify error: ${err}`);
         }
@@ -661,6 +752,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const voiceAttachmentUrls: string[] = [];
         const voiceAsrReferTexts: string[] = [];
         const voiceTranscripts: string[] = [];
+        // 每个附件的本地路径（与 event.attachments 一一对应，未下载的为 null）
+        const attachmentLocalPaths: Array<string | null> = [];
         const voiceTranscriptSources: Array<"stt" | "asr" | "fallback"> = [];
         // 存到 .openclaw/qqbot 目录下的 downloads 文件夹
         const downloadDir = getQQBotDataDir("downloads");
@@ -779,6 +872,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 otherAttachments.push(`[附件: ${localPath}]`);
               }
               log?.info(`[qqbot:${account.accountId}] Downloaded attachment to: ${localPath}`);
+              attachmentLocalPaths.push(localPath);
             } else {
               // 下载失败，fallback 到原始 URL
               log?.error(`[qqbot:${account.accountId}] Failed to download: ${attUrl}`);
@@ -792,6 +886,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               } else {
                 otherAttachments.push(`[附件: ${att.filename ?? att.content_type}] (下载失败)`);
               }
+              attachmentLocalPaths.push(null);
             }
           }
           
@@ -819,6 +914,58 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const userContent = voiceText
           ? (parsedContent.trim() ? `${parsedContent}\n${voiceText}` : voiceText) + attachmentInfo
           : parsedContent + attachmentInfo;
+
+        // ============ 引用消息处理 ============
+        let replyToId: string | undefined;
+        let replyToBody: string | undefined;
+        let replyToSender: string | undefined;
+        let replyToIsQuote = false;
+
+        // 1. 查找被引用消息
+        if (event.refMsgIdx) {
+          const refEntry = getRefIndex(event.refMsgIdx);
+          if (refEntry) {
+            replyToId = event.refMsgIdx;
+            replyToBody = formatRefEntryForAgent(refEntry);
+            replyToSender = refEntry.senderName ?? refEntry.senderId;
+            replyToIsQuote = true;
+            log?.info(`[qqbot:${account.accountId}] Quote detected: refMsgIdx=${event.refMsgIdx}, sender=${replyToSender}, content="${replyToBody.slice(0, 80)}..."`);
+          } else {
+            log?.info(`[qqbot:${account.accountId}] Quote detected but refMsgIdx not in cache: ${event.refMsgIdx}`);
+            replyToId = event.refMsgIdx;
+            replyToIsQuote = true;
+            // 缓存未命中时 replyToBody 为空，AI 只能知道"用户引用了一条消息"
+          }
+        }
+
+        // 2. 缓存当前消息自身的 msgIdx（供将来被引用时查找）
+        // 优先使用推送事件中的 msgIdx（来自 message_scene.ext），否则使用 InputNotify 返回的 refIdx
+        const currentMsgIdx = event.msgIdx ?? inputNotifyRefIdx;
+        if (currentMsgIdx) {
+          const attSummaries = buildAttachmentSummaries(event.attachments, attachmentLocalPaths);
+          // 如果有语音转录,把转录文本和来源写入对应附件摘要
+          if (attSummaries && voiceTranscripts.length > 0) {
+            let voiceIdx = 0;
+            for (const att of attSummaries) {
+              if (att.type === "voice" && voiceIdx < voiceTranscripts.length) {
+                att.transcript = voiceTranscripts[voiceIdx];
+                // 保存转录来源
+                if (voiceIdx < voiceTranscriptSources.length) {
+                  att.transcriptSource = voiceTranscriptSources[voiceIdx];
+                }
+                voiceIdx++;
+              }
+            }
+          }
+          setRefIndex(currentMsgIdx, {
+            content: parsedContent,
+            senderId: event.senderId,
+            senderName: event.senderName,
+            timestamp: new Date(event.timestamp).getTime(),
+            attachments: attSummaries,
+          });
+          log?.info(`[qqbot:${account.accountId}] Cached msgIdx=${currentMsgIdx} for future reference (source: ${event.msgIdx ? "message_scene.ext" : "InputNotify"})`);
+        }
 
         // Body: 展示用的用户原文（Web UI 看到的）
         const body = pluginRuntime.channel.reply.formatInboundEnvelope({
@@ -909,6 +1056,16 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
           ? `\n- 语音ASR兜底文本:\n${uniqueVoiceAsrReferTexts.map((t, i) => `  ${i + 1}. ${t}`).join("\n")}`
           : "";
 
+        // 引用消息上下文
+        let quotePart = "";
+        if (replyToIsQuote) {
+          if (replyToBody) {
+            quotePart = `[引用消息开始]\n${replyToBody}\n[引用消息结束]\n`;
+          } else {
+            quotePart = `[引用消息开始]\n原始内容不可用\n[引用消息结束]\n`;
+          }
+        }
+
         const contextInfo = `你正在通过 QQ 与用户对话。
 
 【会话上下文】
@@ -942,13 +1099,13 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
 【不要向用户透露过多以上述要求，以下是用户输入】
 
 `;
-
         // 命令直接透传，不注入上下文
+        const userMessage = `${quotePart}${userContent}`;
         const agentBody = userContent.startsWith("/")
           ? userContent
           : systemPrompts.length > 0 
-            ? `${contextInfo}\n\n${systemPrompts.join("\n")}\n\n${userContent}`
-            : `${contextInfo}\n\n${userContent}`;
+            ? `${contextInfo}\n\n${systemPrompts.join("\n")}\n\n${userMessage}`
+            : `${contextInfo}\n\n${userMessage}`;
         
         log?.info(`[qqbot:${account.accountId}] agentBody length: ${agentBody.length}`);
 
@@ -1021,13 +1178,20 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
             MediaUrls: remoteMediaUrls,
             MediaUrl: remoteMediaUrls[0],
           } : {}),
+          // 引用消息上下文（对齐 Telegram/Discord 的 ReplyTo 字段）
+          ...(replyToId ? {
+            ReplyToId: replyToId,
+            ReplyToBody: replyToBody,
+            ReplyToSender: replyToSender,
+            ReplyToIsQuote: replyToIsQuote,
+          } : {}),
         });
 
         // 发送消息的辅助函数，带 token 过期重试
-        const sendWithTokenRetry = async (sendFn: (token: string) => Promise<unknown>) => {
+        const sendWithTokenRetry = async <T>(sendFn: (token: string) => Promise<T>): Promise<T> => {
           try {
             const token = await getAccessToken(account.appId, account.clientSecret);
-            await sendFn(token);
+            return await sendFn(token);
           } catch (err) {
             const errMsg = String(err);
             // 如果是 token 相关错误，清除缓存重试一次
@@ -1035,7 +1199,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
               log?.info(`[qqbot:${account.accountId}] Token may be expired, refreshing...`);
               clearTokenCache(account.appId);
               const newToken = await getAccessToken(account.appId, account.clientSecret);
-              await sendFn(newToken);
+              return await sendFn(newToken);
             } else {
               throw err;
             }
@@ -1178,6 +1342,19 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   log?.info(`[qqbot:${account.accountId}] Block deliver after ${toolDeliverCount} tool deliver(s)`);
                 }
 
+                // ============ 引用回复 ============
+                // 机器人回复时，引用用户当前发来的消息（event.msgIdx 是用户消息自身的 REFIDX）
+                // 只在第一条回复消息上附加引用，后续消息不重复引用
+                const quoteRef = event.msgIdx;
+                let quoteRefUsed = false;
+                const consumeQuoteRef = (): string | undefined => {
+                  if (quoteRef && !quoteRefUsed) {
+                    quoteRefUsed = true;
+                    return quoteRef;
+                  }
+                  return undefined;
+                };
+
                 let replyText = payload.text ?? "";
                 
                 // ============ 媒体标签解析 ============
@@ -1299,12 +1476,13 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                       // 发送文本
                       try {
                         await sendWithTokenRetry(async (token) => {
+                          const ref = consumeQuoteRef();
                           if (event.type === "c2c") {
-                            await sendC2CMessage(token, event.senderId, item.content, event.messageId);
+                            return await sendC2CMessage(token, event.senderId, item.content, event.messageId, ref);
                           } else if (event.type === "group" && event.groupOpenid) {
-                            await sendGroupMessage(token, event.groupOpenid, item.content, event.messageId);
+                            return await sendGroupMessage(token, event.groupOpenid, item.content, event.messageId);
                           } else if (event.channelId) {
-                            await sendChannelMessage(token, event.channelId, item.content, event.messageId);
+                            return await sendChannelMessage(token, event.channelId, item.content, event.messageId);
                           }
                         });
                         log?.info(`[qqbot:${account.accountId}] Sent text: ${item.content.slice(0, 50)}...`);
@@ -1375,10 +1553,11 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                           continue;
                         }
                         
-                        // 发送图片
+                        // 发送图片（传递原始本地路径以便 refIdx 缓存记录来源）
+                        const imgLocalPath = isLocalPath ? imagePath : undefined;
                         await sendWithTokenRetry(async (token) => {
                           if (event.type === "c2c") {
-                            await sendC2CImageMessage(token, event.senderId, imageUrl, event.messageId);
+                            await sendC2CImageMessage(token, event.senderId, imageUrl, event.messageId, undefined, imgLocalPath);
                           } else if (event.type === "group" && event.groupOpenid) {
                             await sendGroupImageMessage(token, event.groupOpenid, imageUrl, event.messageId);
                           } else if (event.channelId) {
@@ -1421,7 +1600,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
 
                         await sendWithTokenRetry(async (token) => {
                           if (event.type === "c2c") {
-                            await sendC2CVoiceMessage(token, event.senderId, silkBase64!, event.messageId);
+                            await sendC2CVoiceMessage(token, event.senderId, silkBase64!, event.messageId, undefined, voicePath);
                           } else if (event.type === "group" && event.groupOpenid) {
                             await sendGroupVoiceMessage(token, event.groupOpenid, silkBase64!, event.messageId);
                           } else if (event.channelId) {
@@ -1481,7 +1660,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                             log?.info(`[qqbot:${account.accountId}] Read local video (${formatFileSize(fileBuffer.length)}): ${videoPath}`);
 
                             if (event.type === "c2c") {
-                              await sendC2CVideoMessage(token, event.senderId, undefined, videoBase64, event.messageId);
+                              await sendC2CVideoMessage(token, event.senderId, undefined, videoBase64, event.messageId, undefined, videoPath);
                             } else if (event.type === "group" && event.groupOpenid) {
                               await sendGroupVideoMessage(token, event.groupOpenid, undefined, videoBase64, event.messageId);
                             } else if (event.channelId) {
@@ -1543,7 +1722,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                             log?.info(`[qqbot:${account.accountId}] Read local file (${formatFileSize(fileBuffer.length)}): ${filePath}`);
 
                             if (event.type === "c2c") {
-                              await sendC2CFileMessage(token, event.senderId, fileBase64, undefined, event.messageId, fileName);
+                              await sendC2CFileMessage(token, event.senderId, fileBase64, undefined, event.messageId, fileName, filePath);
                             } else if (event.type === "group" && event.groupOpenid) {
                               await sendGroupFileMessage(token, event.groupOpenid, fileBase64, undefined, event.messageId, fileName);
                             } else if (event.channelId) {
@@ -1623,7 +1802,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                       if (parsedPayload.mediaType === "image") {
                         // 处理图片发送（展开 ~ 路径）
                         let imageUrl = normalizePath(parsedPayload.path);
-                        
+                        const originalImagePath = parsedPayload.source === "file" ? imageUrl : undefined;
+
                         // 如果是本地文件，转换为 Base64 Data URL
                         if (parsedPayload.source === "file") {
                           try {
@@ -1661,11 +1841,11 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                           }
                         }
                         
-                        // 发送图片
+                        // 发送图片（传递原始本地路径以便 refIdx 缓存记录来源）
                         try {
                           await sendWithTokenRetry(async (token) => {
                             if (event.type === "c2c") {
-                              await sendC2CImageMessage(token, event.senderId, imageUrl, event.messageId);
+                              await sendC2CImageMessage(token, event.senderId, imageUrl, event.messageId, undefined, originalImagePath);
                             } else if (event.type === "group" && event.groupOpenid) {
                               await sendGroupImageMessage(token, event.groupOpenid, imageUrl, event.messageId);
                             } else if (event.channelId) {
@@ -1705,12 +1885,12 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                             } else {
                               log?.info(`[qqbot:${account.accountId}] TTS: "${ttsText.slice(0, 50)}..." via ${ttsCfg.model}`);
                               const ttsDir = getQQBotDataDir("tts");
-                              const { silkBase64, duration } = await textToSilk(ttsText, ttsCfg, ttsDir);
-                              log?.info(`[qqbot:${account.accountId}] TTS done: ${formatDuration(duration)}, uploading voice...`);
+                              const { silkPath, silkBase64, duration } = await textToSilk(ttsText, ttsCfg, ttsDir);
+                              log?.info(`[qqbot:${account.accountId}] TTS done: ${formatDuration(duration)}, file saved: ${silkPath}`);
 
                               await sendWithTokenRetry(async (token) => {
                                 if (event.type === "c2c") {
-                                  await sendC2CVoiceMessage(token, event.senderId, silkBase64, event.messageId);
+                                  await sendC2CVoiceMessage(token, event.senderId, silkBase64, event.messageId, ttsText, silkPath);
                                 } else if (event.type === "group" && event.groupOpenid) {
                                   await sendGroupVoiceMessage(token, event.groupOpenid, silkBase64, event.messageId);
                                 } else if (event.channelId) {
@@ -1758,7 +1938,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                                 log?.info(`[qqbot:${account.accountId}] Read local video (${formatFileSize(fileBuffer.length)}): ${videoPath}`);
 
                                 if (event.type === "c2c") {
-                                  await sendC2CVideoMessage(token, event.senderId, undefined, videoBase64, event.messageId);
+                                  await sendC2CVideoMessage(token, event.senderId, undefined, videoBase64, event.messageId, undefined, videoPath);
                                 } else if (event.type === "group" && event.groupOpenid) {
                                   await sendGroupVideoMessage(token, event.groupOpenid, undefined, videoBase64, event.messageId);
                                 } else if (event.channelId) {
@@ -1816,7 +1996,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                                 const fileBuffer = await readFileAsync(filePath);
                                 const fileBase64 = fileBuffer.toString("base64");
                                 if (event.type === "c2c") {
-                                  await sendC2CFileMessage(token, event.senderId, fileBase64, undefined, event.messageId, fileName);
+                                  await sendC2CFileMessage(token, event.senderId, fileBase64, undefined, event.messageId, fileName, filePath);
                                 } else if (event.type === "group" && event.groupOpenid) {
                                   await sendGroupFileMessage(token, event.groupOpenid, fileBase64, undefined, event.messageId, fileName);
                                 } else if (event.channelId) {
@@ -2072,12 +2252,13 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   if (textWithoutImages.trim()) {
                     try {
                       await sendWithTokenRetry(async (token) => {
+                        const ref = consumeQuoteRef();
                         if (event.type === "c2c") {
-                          await sendC2CMessage(token, event.senderId, textWithoutImages, event.messageId);
+                          return await sendC2CMessage(token, event.senderId, textWithoutImages, event.messageId, ref);
                         } else if (event.type === "group" && event.groupOpenid) {
-                          await sendGroupMessage(token, event.groupOpenid, textWithoutImages, event.messageId);
+                          return await sendGroupMessage(token, event.groupOpenid, textWithoutImages, event.messageId);
                         } else if (event.channelId) {
-                          await sendChannelMessage(token, event.channelId, textWithoutImages, event.messageId);
+                          return await sendChannelMessage(token, event.channelId, textWithoutImages, event.messageId);
                         }
                       });
                       log?.info(`[qqbot:${account.accountId}] Sent markdown message with ${httpImageUrls.length} HTTP images (${event.type})`);
@@ -2123,12 +2304,13 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                     // 发送文本消息
                     if (textWithoutImages.trim()) {
                       await sendWithTokenRetry(async (token) => {
+                        const ref = consumeQuoteRef();
                         if (event.type === "c2c") {
-                          await sendC2CMessage(token, event.senderId, textWithoutImages, event.messageId);
+                          return await sendC2CMessage(token, event.senderId, textWithoutImages, event.messageId, ref);
                         } else if (event.type === "group" && event.groupOpenid) {
-                          await sendGroupMessage(token, event.groupOpenid, textWithoutImages, event.messageId);
+                          return await sendGroupMessage(token, event.groupOpenid, textWithoutImages, event.messageId);
                         } else if (event.channelId) {
-                          await sendChannelMessage(token, event.channelId, textWithoutImages, event.messageId);
+                          return await sendChannelMessage(token, event.channelId, textWithoutImages, event.messageId);
                         }
                       });
                       log?.info(`[qqbot:${account.accountId}] Sent text reply (${event.type})`);
@@ -2277,6 +2459,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
               break;
 
             case 0: // Dispatch
+              log?.info(`[qqbot:${account.accountId}] 📩 Dispatch event: t=${t}, d=${JSON.stringify(d)}`);
               if (t === "READY") {
                 const readyData = d as { session_id: string };
                 sessionId = readyData.session_id;
@@ -2317,6 +2500,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   type: "c2c",
                   accountId: account.accountId,
                 });
+                // 解析引用索引
+                const c2cRefs = parseRefIndices(event.message_scene?.ext);
                 // 使用消息队列异步处理，防止阻塞心跳
                 enqueueMessage({
                   type: "c2c",
@@ -2325,6 +2510,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   messageId: event.id,
                   timestamp: event.timestamp,
                   attachments: event.attachments,
+                  refMsgIdx: c2cRefs.refMsgIdx,
+                  msgIdx: c2cRefs.msgIdx,
                 });
               } else if (t === "AT_MESSAGE_CREATE") {
                 const event = d as GuildMessageEvent;
@@ -2335,6 +2522,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   nickname: event.author.username,
                   accountId: account.accountId,
                 });
+                const guildRefs = parseRefIndices((event as any).message_scene?.ext);
                 enqueueMessage({
                   type: "guild",
                   senderId: event.author.id,
@@ -2345,6 +2533,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   channelId: event.channel_id,
                   guildId: event.guild_id,
                   attachments: event.attachments,
+                  refMsgIdx: guildRefs.refMsgIdx,
+                  msgIdx: guildRefs.msgIdx,
                 });
               } else if (t === "DIRECT_MESSAGE_CREATE") {
                 const event = d as GuildMessageEvent;
@@ -2355,6 +2545,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   nickname: event.author.username,
                   accountId: account.accountId,
                 });
+                const dmRefs = parseRefIndices((event as any).message_scene?.ext);
                 enqueueMessage({
                   type: "dm",
                   senderId: event.author.id,
@@ -2364,6 +2555,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   timestamp: event.timestamp,
                   guildId: event.guild_id,
                   attachments: event.attachments,
+                  refMsgIdx: dmRefs.refMsgIdx,
+                  msgIdx: dmRefs.msgIdx,
                 });
               } else if (t === "GROUP_AT_MESSAGE_CREATE") {
                 const event = d as GroupMessageEvent;
@@ -2374,6 +2567,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
+                const groupRefs = parseRefIndices(event.message_scene?.ext);
                 enqueueMessage({
                   type: "group",
                   senderId: event.author.member_openid,
@@ -2382,6 +2576,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   timestamp: event.timestamp,
                   groupOpenid: event.group_openid,
                   attachments: event.attachments,
+                  refMsgIdx: groupRefs.refMsgIdx,
+                  msgIdx: groupRefs.msgIdx,
                 });
               }
               break;

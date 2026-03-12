@@ -102,6 +102,8 @@ export interface C2CMessageEvent {
   timestamp: string;
   message_scene?: {
     source: string;
+    /** ext 数组，可能包含 ref_msg_idx=REFIDX_xxx（引用的消息）和 msg_idx=REFIDX_xxx（自身索引） */
+    ext?: string[];
   };
   attachments?: MessageAttachment[];
 }
@@ -140,6 +142,10 @@ export interface GroupMessageEvent {
   timestamp: string;
   group_id: string;
   group_openid: string;
+  message_scene?: {
+    source: string;
+    ext?: string[];
+  };
   attachments?: MessageAttachment[];
 }
 

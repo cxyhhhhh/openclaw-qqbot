@@ -1,6 +1,7 @@
 import {
   type ChannelPlugin,
   type OpenClawConfig,
+  type NormalizeTargetResult,
   applyAccountNameToChannelSection,
   deleteAccountFromConfigSection,
   setAccountEnabledInConfigSection,
@@ -167,7 +168,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
      * - channel:channelid -> 频道
      * - 纯 openid（32位十六进制）-> 私聊
      */
-    normalizeTarget: (target: string) => {
+    normalizeTarget: (target: string): NormalizeTargetResult => {
       // 去掉 qqbot: 前缀（如果有）
       const id = target.replace(/^qqbot:/i, "");
       
