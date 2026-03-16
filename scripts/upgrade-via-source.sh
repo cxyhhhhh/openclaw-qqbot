@@ -186,6 +186,19 @@ INSTALL_LOG="/tmp/openclaw-install-$(date +%s).log"
 echo "安装日志文件: $INSTALL_LOG"
 echo "详细信息将记录到日志文件中..."
 
+# 安装前先 stop gateway，防止 chokidar 在 plugins install 写入配置的中间状态
+# 触发 restart，导致 "unknown channel id: qqbot" 等错误
+_gw_was_running=0
+if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
+    _gw_was_running=1
+    echo "  暂停 gateway 服务（避免安装过程中中间状态 restart）..."
+    openclaw gateway stop 2>/dev/null || true
+    sleep 1
+fi
+
+# 清理之前可能残留的 staging 目录
+find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+
 # 尝试安装并捕获详细输出
 if ! openclaw plugins install . 2>&1 | tee "$INSTALL_LOG"; then
     echo ""
@@ -243,15 +256,136 @@ if ! openclaw plugins install . 2>&1 | tee "$INSTALL_LOG"; then
     esac
 else
     echo ""
-    echo "✅ 插件安装成功！"
+    echo "✅ 插件安装命令执行完成"
     echo "安装日志已保存到: $INSTALL_LOG"
 
-    # plugins install 会修改 openclaw.json（plugins.allow/entries/installs），
-    # gateway 检测到 config change 后会自动 SIGUSR1 重启（可能触发 1~2 次）。
-    # 必须等这波自动重启完全结束，否则后续的 gateway restart 会叠加导致竞态。
-    echo ""
-    echo "等待 gateway 自动重启链完成（约 20 秒）..."
-    sleep 20
+    # 验证插件目录是否真正创建（防止 "安装成功" 但目录缺失的情况）
+    _plugin_dir_ok=0
+    for _candidate_name in openclaw-qqbot qqbot openclaw-qq; do
+        if [ -d "$HOME/.openclaw/extensions/$_candidate_name" ] && \
+           [ -f "$HOME/.openclaw/extensions/$_candidate_name/package.json" ]; then
+            _plugin_dir_ok=1
+            echo "  ✅ 插件目录验证通过: ~/.openclaw/extensions/$_candidate_name/"
+            break
+        fi
+    done
+    if [ "$_plugin_dir_ok" -eq 0 ]; then
+        echo ""
+        echo "⚠️  警告: 插件目录不存在！安装命令返回成功但目录未创建"
+        echo "  可能原因: staging 目录未正确 rename（参考 openclaw/issues）"
+        echo "  检查 staging 残留:"
+        ls -la "$HOME/.openclaw/extensions/" 2>/dev/null
+        echo ""
+        echo "  尝试自动修复: 清理残留并重试安装..."
+        find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+        if openclaw plugins install . 2>&1 | tee -a "$INSTALL_LOG"; then
+            for _candidate_name in openclaw-qqbot qqbot openclaw-qq; do
+                if [ -d "$HOME/.openclaw/extensions/$_candidate_name" ]; then
+                    _plugin_dir_ok=1
+                    echo "  ✅ 重试安装成功: ~/.openclaw/extensions/$_candidate_name/"
+                    break
+                fi
+            done
+        fi
+        if [ "$_plugin_dir_ok" -eq 0 ]; then
+            echo "  ❌ 重试安装仍失败，插件目录不存在"
+            echo "  请手动排查: ls -la ~/.openclaw/extensions/"
+            # 清理无效的配置条目，防止 gateway 启动时报错
+            echo "  清理无效的配置条目..."
+            node -e "
+              const fs = require('fs');
+              const path = require('path');
+              for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
+                const f = path.join(process.env.HOME, '.' + app, app + '.json');
+                if (!fs.existsSync(f)) continue;
+                const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+                let changed = false;
+                // 移除 channels.qqbot（插件未加载时此配置会导致 unknown channel id 错误）
+                if (cfg.channels && cfg.channels.qqbot) { delete cfg.channels.qqbot; changed = true; }
+                // 清理 plugins.allow 中的 openclaw-qqbot
+                if (cfg.plugins && Array.isArray(cfg.plugins.allow)) {
+                  cfg.plugins.allow = cfg.plugins.allow.filter(x => x !== 'openclaw-qqbot');
+                  changed = true;
+                }
+                if (changed) fs.writeFileSync(f, JSON.stringify(cfg, null, 4) + '\n');
+                break;
+              }
+            " 2>/dev/null || true
+            echo "  已清理无效配置，gateway 可正常启动（无 qqbot 插件状态）"
+            read -t 10 -p "是否继续? (y/N): " _cont || _cont="N"
+            case "$_cont" in
+                [Yy]* ) echo "继续..." ;;
+                * ) exit 1 ;;
+            esac
+        fi
+    fi
+
+    # 清理多余的 peerDependencies 传递依赖（兼容旧版 openclaw）：
+    # openclaw v2026.3.4 之前的 plugins install 缺少 --omit=peer，会把 peerDeps
+    # （openclaw 平台及其 400+ 传递依赖）也安装到插件 node_modules 中。
+    # 新版已修复，此处通过阈值判断：包数量 > 50 才触发清理，避免对新版做无用操作。
+    PLUGIN_NM=""
+    for _candidate in openclaw-qqbot qqbot openclaw-qq; do
+        _nm="$HOME/.openclaw/extensions/$_candidate/node_modules"
+        [ -d "$_nm" ] && PLUGIN_NM="$_nm" && break
+    done
+    if [ -n "$PLUGIN_NM" ]; then
+        _before=$(ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$_before" -gt 50 ]; then
+            # 读取 bundledDependencies 列表，只保留这些包及其子依赖
+            _bundled_deps=$(node -e "
+              const fs = require('fs');
+              const path = require('path');
+              const pkgPath = path.join('$PLUGIN_NM', '..', 'package.json');
+              if (!fs.existsSync(pkgPath)) process.exit(0);
+              const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+              const bundled = pkg.bundledDependencies || pkg.bundleDependencies || [];
+              const keep = new Set();
+              const resolve = (name) => {
+                if (keep.has(name)) return;
+                keep.add(name);
+                const depPkg = path.join('$PLUGIN_NM', name, 'package.json');
+                if (!fs.existsSync(depPkg)) return;
+                const dep = JSON.parse(fs.readFileSync(depPkg, 'utf8'));
+                for (const d of Object.keys(dep.dependencies || {})) resolve(d);
+              };
+              bundled.forEach(resolve);
+              const installed = fs.readdirSync('$PLUGIN_NM').filter(n => !n.startsWith('.'));
+              const toRemove = [];
+              for (const item of installed) {
+                if (item.startsWith('@')) {
+                  const scopeDir = path.join('$PLUGIN_NM', item);
+                  const subs = fs.readdirSync(scopeDir);
+                  const keepSubs = subs.filter(s => keep.has(item + '/' + s));
+                  if (keepSubs.length === 0) toRemove.push(item);
+                  else {
+                    for (const s of subs) {
+                      if (!keep.has(item + '/' + s)) toRemove.push(item + '/' + s);
+                    }
+                  }
+                } else {
+                  if (!keep.has(item)) toRemove.push(item);
+                }
+              }
+              process.stdout.write(toRemove.join('\n'));
+            " 2>/dev/null || true)
+            if [ -n "$_bundled_deps" ]; then
+                echo ""
+                echo "检测到 ${_before} 个包（超过阈值 50），清理多余的 peerDep 传递依赖..."
+                echo "$_bundled_deps" | while IFS= read -r _pkg; do
+                    rm -rf "$PLUGIN_NM/$_pkg"
+                done
+                find "$PLUGIN_NM" -maxdepth 1 -type d -name '@*' -empty -delete 2>/dev/null || true
+                _after=$(ls -d "$PLUGIN_NM"/*/ "$PLUGIN_NM"/@*/*/ 2>/dev/null | wc -l | tr -d ' ')
+                echo "  已清理: ${_before} → ${_after} 个包"
+            fi
+        else
+            echo "  node_modules 包数量正常（${_before} 个），无需清理"
+        fi
+    fi
+
+    # gateway 已在安装前 stop，此时不会有自动 restart 的问题
+    # 所有配置写入完成后，在 Step 6 统一启动
 
     # 记录更新后的 qqbot 插件版本
     NEW_QQBOT_VERSION=$(node -e '
@@ -318,10 +452,9 @@ if [ -n "$DESIRED_QQBOT_TOKEN" ]; then
     else
         echo "✅ 机器人通道配置成功"
         _config_changed=1
-        # 重要：配置写入后 gateway 会自动检测变化并热重载（SIGUSR1）
-        # 必须等待热重载完成，否则后续的 gateway restart 会导致连续两次重启
-        echo "等待 gateway 热重载完成..."
-        sleep 5
+        # channels 配置变更在 reload plan 中匹配为 hot reload（非 restart），
+        # 由 channel 插件热重载处理，通常 <1 秒完成，无需长时间等待。
+        sleep 1
     fi
 else
     # 未提供任何可用 token 时，检查是否已有可用配置
@@ -446,19 +579,33 @@ start_choice=$(printf '%s' "$start_choice" | tr '[:upper:]' '[:lower:]')
 case "$start_choice" in
     y|yes)
         echo ""
-        # 不论配置是否变更，都显式 restart 一次，确保插件正确加载
-        # （plugins install 触发的自动重启链已在第 3 步等待完成）
-        echo "正在后台重启 openclaw 网关服务..."
-        if ! openclaw gateway restart 2>&1; then
+        # gateway 在安装前已 stop（unload），直接 restart 会报 "not loaded"
+        # 因此先 install（注册服务）再 start，避免必现的恢复流程
+        echo "正在启动 openclaw 网关服务..."
+        openclaw gateway install 2>/dev/null || true
+        _start_output=$(openclaw gateway start 2>&1) || true
+        echo "$_start_output"
+
+        if echo "$_start_output" | grep -qi "not loaded\|not found\|not installed\|error\|fail"; then
             echo ""
-            echo "⚠️  后台重启失败，可能服务未安装"
-            echo "尝试: openclaw gateway install && openclaw gateway start"
+            echo "⚠️  启动异常，尝试 restart 恢复..."
+            _restart_output=$(openclaw gateway restart 2>&1) || true
+            echo "$_restart_output"
+            if echo "$_restart_output" | grep -qi "not loaded\|not found\|not installed"; then
+                echo ""
+                echo "⚠️  自动恢复失败，请手动执行："
+                echo "  openclaw gateway install && openclaw gateway start"
+            else
+                echo ""
+                echo "✅ gateway 服务已启动"
+            fi
+        else
+            echo ""
+            echo "✅ openclaw 网关已在后台启动"
         fi
         echo ""
-        echo "✅ openclaw 网关已在后台重启"
-        echo ""
-        # 等待 gateway 端口就绪（插件安装+自动重启可能需要 30-60 秒）
-        echo "等待 gateway 就绪（插件安装中，可能需要 30-60 秒）..."
+        # 等待 gateway 端口就绪
+        echo "等待 gateway 就绪..."
         echo "========================================="
         _port_ready=0
         for i in $(seq 1 30); do
@@ -472,32 +619,49 @@ case "$start_choice" in
         echo ""
 
         if [ "$_port_ready" -eq 0 ]; then
-            echo "⚠️  等待超时，gateway 可能仍在启动中"
-            echo "请手动检查: openclaw doctor"
-            echo "或查看日志: tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log"
-        else
+            echo "⚠️  等待超时，尝试 openclaw doctor --fix 自动修复..."
+            _doctor_output=$(openclaw doctor --fix 2>&1) || true
+            echo "$_doctor_output"
+            # doctor --fix 后再尝试 restart 一次
+            echo ""
+            echo "doctor 修复后重试 gateway restart..."
+            openclaw gateway restart 2>&1 || true
+            sleep 5
+            if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
+                echo "✅ doctor --fix 后 gateway 启动成功"
+                _port_ready=1
+            else
+                echo "❌ 仍然无法启动，请手动排查:"
+                echo "  openclaw doctor"
+                echo "  tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log"
+            fi
+        fi
+
+        # 端口就绪后：检查 qqbot 连接 + 跟踪日志
+        if [ "$_port_ready" -eq 1 ]; then
             echo "✅ Gateway 端口已就绪"
             echo ""
-            # 检查 qqbot WS 是否连接成功（最多等 30 秒）
+            # 检查 qqbot WS 是否连接成功（最多等 20 秒）
             echo "检查 qqbot 插件连接状态..."
             _LOG_FILE="/tmp/openclaw/openclaw-$(date +%Y-%m-%d).log"
+            _restart_ts=$(date +%s)
             _qqbot_ready=0
-            for _j in $(seq 1 15); do
-                if grep -q "Gateway ready" "$_LOG_FILE" 2>/dev/null && \
-                   _last_ready_time=$(grep "Gateway ready" "$_LOG_FILE" | tail -1 | grep -o '"date":"[^"]*"' | tail -1) && \
-                   [ -n "$_last_ready_time" ]; then
-                    _qqbot_ready=1
-                    break
+            for _j in $(seq 1 10); do
+                if [ -f "$_LOG_FILE" ]; then
+                    _last_line=$(grep "Gateway ready" "$_LOG_FILE" 2>/dev/null | tail -1 || true)
+                    if [ -n "$_last_line" ]; then
+                        _qqbot_ready=1
+                        break
+                    fi
                 fi
-                printf "\r  等待 qqbot WS 连接... (%d/15)" "$_j"
+                printf "\r  等待 qqbot WS 连接... (%d/10)" "$_j"
                 sleep 2
             done
             echo ""
 
             if [ "$_qqbot_ready" -eq 0 ]; then
-                echo "⚠️  qqbot 插件可能未正确加载，尝试再次重启..."
-                openclaw gateway restart 2>&1 || true
-                sleep 10
+                echo "⚠️  qqbot 插件可能未正确加载"
+                echo "请检查: openclaw doctor"
             else
                 echo "✅ qqbot 插件已连接"
             fi

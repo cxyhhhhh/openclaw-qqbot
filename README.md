@@ -10,7 +10,7 @@
 
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
-### 🚀 Current Version: `v1.5.7`
+### 🚀 Current Version: `v1.6.0`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -99,7 +99,7 @@ If your main model supports vision (e.g. Tencent Hunyuan `hunyuan-vision`), AI c
 >
 > **QQBot**: Here you go! 🐱
 
-AI sends images via `<qqimg>path</qqimg>`. Supports local paths and URLs. Formats: jpg/png/gif/webp/bmp.
+AI can send images directly. Supports local paths and URLs. Formats: jpg/png/gif/webp/bmp.
 
 <img width="360" src="docs/images/4645f2b3a20822b7f8d6664a708529eb_720.jpg" alt="Image Generation Demo" />
 
@@ -109,7 +109,7 @@ AI sends images via `<qqimg>path</qqimg>`. Supports local paths and URLs. Format
 >
 > **QQBot**: *(sends a voice message)*
 
-AI sends voice via `<qqvoice>path</qqvoice>`. Formats: mp3/wav/silk/ogg. No ffmpeg required.
+AI can send voice messages directly. Formats: mp3/wav/silk/ogg. No ffmpeg required.
 
 <img width="360" src="docs/images/21dce8bfc553ce23d1bd1b270e9c516c.jpg" alt="TTS Voice Demo" />
 
@@ -129,7 +129,7 @@ This capability depends on OpenClaw cron scheduling and proactive messaging. If 
 >
 > **QQBot**: *(sends a .txt file)*
 
-AI sends files via `<qqfile>path</qqfile>`. Any format, up to 20MB.
+AI can send files directly. Any format, up to 20MB.
 
 <img width="360" src="docs/images/17cada70df90185d45a2d6dd36e92f2f_720.jpg" alt="File Sending Demo" />
 
@@ -139,21 +139,61 @@ AI sends files via `<qqfile>path</qqfile>`. Any format, up to 20MB.
 >
 > **QQBot**: *(sends a video)*
 
-AI sends videos via `<qqvideo>path</qqvideo>`. Supports local files and URLs. Large files (>5MB) auto-show upload progress.
+AI can send videos directly. Supports local files and URLs.
 
 <img width="360" src="docs/images/85d03b8a216f267ab7b2aee248a18a41_720.jpg" alt="Video Sending Demo" />
 
-### Rich Media Tag Reference
+> **Under the hood:** Upload dedup caching, ordered queue delivery, and multi-layer audio format fallback.
 
-| Tag | Direction | Notes |
-|-----|-----------|-------|
-| `<qqimg>path</qqimg>` | Send | jpg/png/gif/webp/bmp, local path or URL |
-| `<qqvoice>path</qqvoice>` | Send | mp3/wav/silk/ogg, no ffmpeg required |
-| `<qqfile>path</qqfile>` | Send | Any format, up to 20MB |
-| `<qqvideo>path</qqvideo>` | Send | Local path or URL |
-| Voice / File / Image | Receive | Auto-transcribe (STT), auto-download, or vision analysis |
+### 🛠️ Slash Commands
 
-> **Under the hood:** 30+ tag variant auto-correction, upload dedup caching, ordered queue delivery, and multi-layer audio format fallback.
+The plugin provides built-in slash commands that are intercepted before reaching the AI queue, giving instant responses for diagnostics and management.
+
+#### `/qqbot-ping` — Latency Test
+
+> **You**: `/qqbot-ping`
+>
+> **QQBot**: 🏓 pong！⏱ Latency: 495ms (network: 494ms, plugin: 1ms)
+
+Measures end-to-end latency from QQ server push to plugin response, broken down into network transport and plugin processing time.
+
+<img width="360" src="docs/images/slash-ping.jpg" alt="Ping Demo" />
+
+#### `/qqbot-version` — Version Info
+
+> **You**: `/qqbot-version`
+>
+> **QQBot**: 🦞 Framework: OpenClaw 2026.3.13 / 🤖 Plugin: v1.6.0 / ✅ Up to date
+
+Shows framework version, plugin version, and update status at a glance.
+
+<!-- <img width="360" src="" alt="Version Demo" /> -->
+
+#### `/qqbot-help` — Command List
+
+> **You**: `/qqbot-help`
+>
+> **QQBot**: Lists all available slash commands with descriptions.
+
+<img width="360" src="docs/images/slash-help.jpg" alt="Help Demo" />
+
+#### `/qqbot-upgrade` — Upgrade Guide
+
+> **You**: `/qqbot-upgrade`
+>
+> **QQBot**: Shows current version, latest version (if available), and a link to the upgrade guide.
+
+ <img width="360" src="docs/images/slash-upgrade.jpg" alt="Upgrade Demo" /> 
+
+#### `/qqbot-logs` — Log Export
+
+> **You**: `/qqbot-logs`
+>
+> **QQBot**: 📋 Logs packaged (~2000 lines), sending file... *(sends a .txt file)*
+
+Exports the last ~2000 lines of gateway logs as a file for quick troubleshooting.
+
+<img width="360" src="docs/images/slash-logs.jpg" alt="Logs Demo" />
 
 ---
 
@@ -379,7 +419,7 @@ STT supports two-level configuration with priority fallback:
 - `provider` — references a key in `models.providers` to inherit `baseUrl` and `apiKey`
 - `voice` — voice variant
 - Set `enabled: false` to disable (default: `true`)
-- When configured, AI can use `<qqvoice>` tags to generate and send voice messages
+- When configured, AI can generate and send voice messages
 
 ---
 
