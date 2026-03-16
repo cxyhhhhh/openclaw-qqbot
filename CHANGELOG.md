@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.0] - 2026-03-16
+
+### Added
+
+- **Slash command system**: `/qqbot-ping`, `/qqbot-version`, `/qqbot-help`, `/qqbot-commands`, `/qqbot-upgrade`, `/qqbot-logs` — six plugin-level slash commands.
+- **Update checker**: Background npm version check with update status in `/qqbot-version` and upgrade guide in `/qqbot-upgrade`.
+- **Startup greeting**: Distinguish first install vs. restart with different greeting messages.
+- **Log download**: `/qqbot-logs` packages the last 2000 lines of logs and sends as a file.
+
+### Improved
+
+- **Greeting debounce**: Suppress duplicate greetings within 60s during rapid restarts (e.g. upgrades).
+- **Proactive message 48h filter**: Skip users inactive for 48h+ when sending startup greetings, reducing 500 errors.
+- **Token cache refresh threshold**: Changed from hardcoded 5-minute early refresh to `min(5min, remaining/3)`, fixing repeated token requests when API returns short-lived tokens.
+
 ## [1.5.7] - 2026-03-12
 
 ### Added

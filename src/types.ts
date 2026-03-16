@@ -60,7 +60,7 @@ export interface QQBotAccountConfig {
    */
   urlDirectUpload?: boolean;
   /**
-   * /upgrade 指令返回的升级指引网址
+   * /qqbot-upgrade 指令返回的升级指引网址
    * 默认: https://github.com/tencent-connect/openclaw-qqbot
    */
   upgradeUrl?: string;

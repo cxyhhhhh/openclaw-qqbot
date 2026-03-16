@@ -7,7 +7,7 @@ import { loadSession, saveSession, clearSession, type SessionState } from "./ses
 import { recordKnownUser, flushKnownUsers, listKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
-import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type QueueSnapshot } from "./slash-commands.js";
+import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type SlashCommandFileResult, type QueueSnapshot } from "./slash-commands.js";
 import { triggerUpdateCheck } from "./update-checker.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
@@ -344,6 +344,61 @@ async function ensureImageServer(log?: GatewayContext["log"], publicBaseUrl?: st
   }
 }
 
+// ============ 启动问候语（首次安装/版本更新 vs 普通重启） ============
+
+// 模块级变量：进程生命周期内只有首次为 true
+// 区分 gateway restart（进程重启）和 health-monitor 断线重连
+let isFirstReadyGlobal = true;
+
+const STARTUP_MARKER_FILE = path.join(getQQBotDataDir("data"), "startup-marker.json");
+
+/**
+ * 判断是否为首次安装或版本更新，返回对应的问候语。
+ * - 首次安装 / 版本变更 → "Haha，我的'灵魂'已上线，随时等你吩咐。"
+ * - 普通重启             → "我重新登上了，有事随时找我。"
+ * - 短时间内重复重启（60s 内） → null（跳过，避免刷屏）
+ */
+function getStartupGreeting(): string | null {
+  const currentVersion = getPluginVersion();
+  let isFirstOrUpdated = true;
+  let lastGreetedAt = 0;
+
+  try {
+    if (fs.existsSync(STARTUP_MARKER_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STARTUP_MARKER_FILE, "utf8"));
+      if (data.version === currentVersion) {
+        isFirstOrUpdated = false;
+      }
+      if (data.greetedAt) {
+        lastGreetedAt = new Date(data.greetedAt).getTime() || 0;
+      }
+    }
+  } catch {
+    // 文件损坏或不存在，视为首次
+  }
+
+  // 防抖：60s 内重复重启不再发送问候（升级场景 stop→start 间隔很短）
+  const GREETING_DEBOUNCE_MS = 60_000;
+  if (!isFirstOrUpdated && lastGreetedAt > 0 && Date.now() - lastGreetedAt < GREETING_DEBOUNCE_MS) {
+    return null;
+  }
+
+  // 更新 marker 文件
+  try {
+    fs.writeFileSync(STARTUP_MARKER_FILE, JSON.stringify({
+      version: currentVersion,
+      startedAt: new Date().toISOString(),
+      greetedAt: new Date().toISOString(),
+    }) + "\n");
+  } catch {
+    // ignore
+  }
+
+  return isFirstOrUpdated
+    ? `Haha，我的'灵魂'已上线，随时等你吩咐。`
+    : `我重新登上了，有事随时找我。`;
+}
+
 /**
  * 启动 Gateway WebSocket 连接（带自动重连）
  * 支持流式消息发送
@@ -440,7 +495,50 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   let isConnecting = false; // 防止并发连接
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null; // 重连定时器
   let shouldRefreshToken = false; // 下次连接是否需要刷新 token
-  let isFirstReady = true; // 仅 startGateway 后首次 READY 才发送上线通知
+  // 使用模块级 isFirstReadyGlobal，确保只有进程级重启才发送问候语
+  // health-monitor 重连不会重新初始化为 true
+
+  /** 异步发送启动问候语（READY 或 RESUMED 时调用） */
+  const sendStartupGreetings = (trigger: "READY" | "RESUMED") => {
+    (async () => {
+      try {
+        const greeting = getStartupGreeting();
+        if (!greeting) {
+          log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (debounced, trigger=${trigger})`);
+          return;
+        }
+        log?.info(`[qqbot:${account.accountId}] Sending startup greeting (trigger=${trigger}): "${greeting}"`);
+        const token = await getAccessToken(account.appId, account.clientSecret);
+        const users = listKnownUsers({ accountId: account.accountId, type: "c2c" });
+        for (const user of users) {
+          try {
+            await sendProactiveC2CMessage(token, user.openid, greeting);
+            log?.info(`[qqbot:${account.accountId}] Sent startup greeting to c2c:${user.openid}`);
+          } catch (err) {
+            log?.debug?.(`[qqbot:${account.accountId}] Failed to send startup greeting to c2c:${user.openid}: ${err}`);
+          }
+          await new Promise(r => setTimeout(r, 500));
+        }
+        const groups = listKnownUsers({ accountId: account.accountId, type: "group" });
+        const sentGroups = new Set<string>();
+        for (const user of groups) {
+          const gid = user.groupOpenid;
+          if (!gid || sentGroups.has(gid)) continue;
+          sentGroups.add(gid);
+          try {
+            await sendProactiveGroupMessage(token, gid, greeting);
+            log?.info(`[qqbot:${account.accountId}] Sent startup greeting to group:${gid}`);
+          } catch (err) {
+            log?.debug?.(`[qqbot:${account.accountId}] Failed to send startup greeting to group:${gid}: ${err}`);
+          }
+          await new Promise(r => setTimeout(r, 500));
+        }
+        log?.info(`[qqbot:${account.accountId}] Startup greetings sent (${users.length} c2c, ${sentGroups.size} groups)`);
+      } catch (err) {
+        log?.error(`[qqbot:${account.accountId}] Failed to send startup greetings: ${err}`);
+      }
+    })();
+  };
 
   // ============ P1-2: 尝试从持久化存储恢复 Session ============
   // 传入当前 appId，如果 appId 已变更（换了机器人），旧 session 自动失效
@@ -594,15 +692,40 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       // 命中插件级指令，直接回复
       log?.info(`[qqbot:${account.accountId}] Slash command matched: ${content}, replying directly`);
       const token = await getAccessToken(account.appId, account.clientSecret);
+
+      // 解析回复：纯文本 or 带文件的结果
+      const isFileResult = typeof reply === "object" && reply !== null && "filePath" in reply;
+      const replyText = isFileResult ? (reply as SlashCommandFileResult).text : reply as string;
+      const replyFile = isFileResult ? (reply as SlashCommandFileResult).filePath : null;
+
+      // 先发送文本回复
       if (msg.type === "c2c") {
-        await sendC2CMessage(token, msg.senderId, reply, msg.messageId);
+        await sendC2CMessage(token, msg.senderId, replyText, msg.messageId);
       } else if (msg.type === "group" && msg.groupOpenid) {
-        await sendGroupMessage(token, msg.groupOpenid, reply, msg.messageId);
+        await sendGroupMessage(token, msg.groupOpenid, replyText, msg.messageId);
       } else if (msg.channelId) {
-        await sendChannelMessage(token, msg.channelId, reply, msg.messageId);
+        await sendChannelMessage(token, msg.channelId, replyText, msg.messageId);
       } else if (msg.type === "dm") {
-        // 频道私信走 C2C
-        await sendC2CMessage(token, msg.senderId, reply, msg.messageId);
+        await sendC2CMessage(token, msg.senderId, replyText, msg.messageId);
+      }
+
+      // 如果有文件需要发送
+      if (replyFile) {
+        try {
+          const targetType = msg.type === "group" ? "group" : msg.type === "c2c" || msg.type === "dm" ? "c2c" : "channel";
+          const targetId = msg.type === "group" ? (msg.groupOpenid || msg.senderId) : msg.type === "c2c" || msg.type === "dm" ? msg.senderId : (msg.channelId || msg.senderId);
+          const mediaCtx: MediaTargetContext = {
+            targetType,
+            targetId,
+            account,
+            replyToId: msg.messageId,
+            logPrefix: `[qqbot:${account.accountId}]`,
+          };
+          await sendDocument(mediaCtx, replyFile);
+          log?.info(`[qqbot:${account.accountId}] Slash command file sent: ${replyFile}`);
+        } catch (fileErr) {
+          log?.error(`[qqbot:${account.accountId}] Failed to send slash command file: ${fileErr}`);
+        }
       }
     } catch (err) {
       log?.error(`[qqbot:${account.accountId}] Slash command error: ${err}`);
@@ -2355,48 +2478,19 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
                 // 仅 startGateway 后的首次 READY 才发送上线通知
                 // ws 断线重连（resume 失败后重新 Identify）产生的 READY 不发送
-                if (!isFirstReady) {
+                if (!isFirstReadyGlobal) {
                   log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (reconnect READY, not first startup)`);
                 } else {
-                isFirstReady = false;
-                (async () => {
-                  try {
-                    const greeting = `Haha，我的'灵魂'已上线，随时等你吩咐。`;
-                    const token = await getAccessToken(account.appId, account.clientSecret);
-                    const users = listKnownUsers({ accountId: account.accountId, type: "c2c" });
-                    for (const user of users) {
-                      try {
-                        await sendProactiveC2CMessage(token, user.openid, greeting);
-                        log?.info(`[qqbot:${account.accountId}] Sent startup greeting to c2c:${user.openid}`);
-                      } catch (err) {
-                        log?.debug?.(`[qqbot:${account.accountId}] Failed to send startup greeting to c2c:${user.openid}: ${err}`);
-                      }
-                      // 避免频率限制
-                      await new Promise(r => setTimeout(r, 500));
-                    }
-                    const groups = listKnownUsers({ accountId: account.accountId, type: "group" });
-                    // 群组去重（同一群只发一次）
-                    const sentGroups = new Set<string>();
-                    for (const user of groups) {
-                      const gid = user.groupOpenid;
-                      if (!gid || sentGroups.has(gid)) continue;
-                      sentGroups.add(gid);
-                      try {
-                        await sendProactiveGroupMessage(token, gid, greeting);
-                        log?.info(`[qqbot:${account.accountId}] Sent startup greeting to group:${gid}`);
-                      } catch (err) {
-                        log?.debug?.(`[qqbot:${account.accountId}] Failed to send startup greeting to group:${gid}: ${err}`);
-                      }
-                      await new Promise(r => setTimeout(r, 500));
-                    }
-                    log?.info(`[qqbot:${account.accountId}] Startup greetings sent (${users.length} c2c, ${sentGroups.size} groups)`);
-                  } catch (err) {
-                    log?.error(`[qqbot:${account.accountId}] Failed to send startup greetings: ${err}`);
-                  }
-                })();
+                  isFirstReadyGlobal = false;
+                  sendStartupGreetings("READY");
                 } // end isFirstReady
               } else if (t === "RESUMED") {
                 log?.info(`[qqbot:${account.accountId}] Session resumed`);
+                // RESUMED 也属于首次启动（gateway restart 通常走 resume）
+                if (isFirstReadyGlobal) {
+                  isFirstReadyGlobal = false;
+                  sendStartupGreetings("RESUMED");
+                }
                 // P1-2: 更新 Session 连接时间
                 if (sessionId) {
                   saveSession({

@@ -84,8 +84,12 @@ export async function getAccessToken(appId: string, clientSecret: string): Promi
   const normalizedAppId = String(appId).trim();
   const cachedToken = tokenCacheMap.get(normalizedAppId);
 
-  // 检查缓存：未过期 且 appId 未变化 时复用
-  if (cachedToken && Date.now() < cachedToken.expiresAt - 5 * 60 * 1000) {
+  // 检查缓存：未过期时复用
+  // 提前刷新阈值：取 expiresIn 的 1/3 和 5 分钟的较小值，避免短有效期 token 永远被判定过期
+  const REFRESH_AHEAD_MS = cachedToken
+    ? Math.min(5 * 60 * 1000, (cachedToken.expiresAt - Date.now()) / 3)
+    : 0;
+  if (cachedToken && Date.now() < cachedToken.expiresAt - REFRESH_AHEAD_MS) {
     return cachedToken.token;
   }
 
@@ -195,7 +199,8 @@ export function getTokenStatus(appId: string): { status: "valid" | "expired" | "
   if (!cached) {
     return { status: "none", expiresAt: null };
   }
-  const isValid = Date.now() < cached.expiresAt - 5 * 60 * 1000;
+  const remaining = cached.expiresAt - Date.now();
+  const isValid = remaining > Math.min(5 * 60 * 1000, remaining / 3);
   return { status: isValid ? "valid" : "expired", expiresAt: cached.expiresAt };
 }
 

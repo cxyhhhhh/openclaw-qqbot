@@ -13,14 +13,11 @@
 
 import type { QQBotAccountConfig } from "./types.js";
 import { createRequire } from "node:module";
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
-import { getUpdateInfo, formatUpdateNotice } from "./update-checker.js";
+import { getUpdateInfo } from "./update-checker.js";
 const require = createRequire(import.meta.url);
-const execFileAsync = promisify(execFile);
 
 // 读取 package.json 中的版本号
 let PLUGIN_VERSION = "unknown";
@@ -29,6 +26,30 @@ try {
   PLUGIN_VERSION = pkg.version ?? "unknown";
 } catch {
   // fallback
+}
+
+// 获取 openclaw 框架版本（缓存结果，只执行一次）
+let _frameworkVersion: string | null = null;
+function getFrameworkVersion(): string {
+  if (_frameworkVersion !== null) return _frameworkVersion;
+  try {
+    for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
+      try {
+        const out = execFileSync(cli, ["--version"], { timeout: 3000, encoding: "utf8" }).trim();
+        // 输出格式: "OpenClaw 2026.3.13 (61d171a)"
+        if (out) {
+          _frameworkVersion = out;
+          return _frameworkVersion;
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // fallback
+  }
+  _frameworkVersion = "unknown";
+  return _frameworkVersion;
 }
 
 // ============ 类型定义 ============
@@ -75,8 +96,15 @@ export interface QueueSnapshot {
   senderPending: number;
 }
 
-/** 斜杠指令返回值：直接回复文本，null 表示不处理（交给框架） */
-type SlashCommandResult = string | null;
+/** 斜杠指令返回值：文本、带文件的结果、或 null（不处理） */
+export type SlashCommandResult = string | SlashCommandFileResult | null;
+
+/** 带文件的指令结果（先回复文本，再发送文件） */
+export interface SlashCommandFileResult {
+  text: string;
+  /** 要发送的本地文件路径 */
+  filePath: string;
+}
 
 /** 斜杠指令定义 */
 interface SlashCommand {
@@ -99,117 +127,157 @@ function registerCommand(cmd: SlashCommand): void {
 // ============ 内置指令 ============
 
 /**
- * /ping — 轻量连通性检查
+ * /qqbot-ping — 测试当前 openclaw 与 QQ 连接的网络延迟
  */
 registerCommand({
-  name: "ping",
-  description: "连通性检查",
+  name: "qqbot-ping",
+  description: "测试当前 openclaw 与 QQ 连接的网络延迟",
   handler: (ctx) => {
     const now = Date.now();
     const eventTime = new Date(ctx.eventTimestamp).getTime();
-    const latency = isNaN(eventTime) ? "N/A" : `${now - eventTime}ms`;
-    return `🏓 pong! (${latency})`;
+    if (isNaN(eventTime)) {
+      return `🏓 pong!`;
+    }
+    const totalMs = now - eventTime;
+    const qqToPlugin = ctx.receivedAt - eventTime;
+    const pluginProcess = now - ctx.receivedAt;
+    const lines = [
+      `🏓 pong！`,
+      ``,
+      `⏱ 延迟: ${totalMs}ms`,
+      `  ├ 网络传输: ${qqToPlugin}ms`,
+      `  └ 插件处理: ${pluginProcess}ms`,
+    ];
+    return lines.join("\n");
   },
 });
 
 /**
- * /version — 版本号
+ * /qqbot-version — 查看插件版本号
  */
 registerCommand({
-  name: "version",
-  description: "插件版本号",
+  name: "qqbot-version",
+  description: "查看插件版本号",
   handler: () => {
-    const lines = [`QQBot Plugin v${PLUGIN_VERSION}`];
+    const frameworkVersion = getFrameworkVersion();
+    const lines = [
+      `🦞 框架: ${frameworkVersion}`,
+      `🤖 qqbot插件: v${PLUGIN_VERSION}`,
+    ];
     const info = getUpdateInfo();
-    const notice = formatUpdateNotice(info);
-    if (notice) {
-      lines.push("", notice);
+    if (info.checkedAt === 0) {
+      // 尚未检查过
+      lines.push(`⏳ 版本检查中...`);
+    } else if (info.error) {
+      lines.push(`⚠️ 版本检查失败`);
+    } else     if (info.hasUpdate && info.latest) {
+      lines.push(`🆕 有新版本: v${info.latest}，使用 /qqbot-upgrade 升级`);
+    } else {
+      lines.push(`✅ 当前已是最新版本`);
     }
     return lines.join("\n");
   },
 });
 
 /**
- * /help — 列出所有插件级斜杠指令
+ * /qqbot-help — 查看所有指令以及用途
  */
 registerCommand({
-  name: "help",
-  description: "列出所有插件级斜杠指令",
-  handler: (ctx) => {
-    const url = ctx.accountConfig?.upgradeUrl || DEFAULT_UPGRADE_URL;
+  name: "qqbot-help",
+  description: "查看所有指令以及用途",
+  handler: () => {
     const lines = [`**qqbot 插件 v${PLUGIN_VERSION}**`, ``];
     for (const [name, cmd] of commands) {
       lines.push(`- \`/${name}\` — ${cmd.description}`);
     }
-    lines.push(``, `**升级指引**: ${url}`);
-    // 如有更新可用，追加提示
-    const info = getUpdateInfo();
-    const notice = formatUpdateNotice(info);
-    if (notice) {
-      lines.push("", notice);
-    }
     return lines.join("\n");
   },
 });
 
-const DEFAULT_UPGRADE_URL = "https://github.com/tencent-connect/openclaw-qqbot";
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPGRADE_SCRIPT = path.resolve(__dirname, "../scripts/upgrade-via-npm.sh");
+const DEFAULT_UPGRADE_URL = "https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg";
+
+/** 升级说明文本 */
+function getUpgradeGuide(url: string): string {
+  return `📖 升级指引:\n${url}`;
+}
 
 /**
- * /upgrade [version] — 触发插件版本升级
- * 无参数: 升级到 latest
- * 带参数: 升级到指定版本，如 /upgrade 1.6.1
+ * /qqbot-upgrade — 查看版本更新状态 + 升级指引
  */
 registerCommand({
-  name: "upgrade",
-  description: "升级插件版本（/upgrade [版本号]）",
-  handler: async (ctx) => {
-    const targetVersion = ctx.args.trim();
-    const scriptArgs = targetVersion ? ["--version", targetVersion] : [];
+  name: "qqbot-upgrade",
+  description: "查看版本更新与升级指引",
+  handler: (ctx) => {
+    const url = ctx.accountConfig?.upgradeUrl || DEFAULT_UPGRADE_URL;
+    const info = getUpdateInfo();
+    const lines: string[] = [];
 
-    let upgradeOk = false;
-    let report = "";
-    try {
-      const { stdout, stderr } = await execFileAsync("bash", [UPGRADE_SCRIPT, ...scriptArgs], {
-        timeout: 120_000,
-        env: { ...process.env, PATH: process.env.PATH },
-      });
-      const output = (stdout + stderr).trim();
+    if (info.checkedAt === 0) {
+      lines.push(`🤖 当前版本: v${PLUGIN_VERSION}`);
+      lines.push(`⏳ 版本检查中，请稍后再试`);
+    } else if (info.error) {
+      lines.push(`🤖 当前版本: v${PLUGIN_VERSION}`);
+      lines.push(`⚠️ 版本检查失败`);
+    } else if (info.hasUpdate && info.latest) {
+      lines.push(`🤖 当前版本: v${PLUGIN_VERSION}`);
+      lines.push(`🆕 最新版本: v${info.latest}`);
+    } else {
+      lines.push(`✅ 当前已是最新版本 v${PLUGIN_VERSION}`);
+    }
 
-      // 从脚本输出解析报告文本（QQBOT_REPORT=...）和版本号
-      const reportMatch = output.match(/QQBOT_REPORT=(.+)/);
-      const versionMatch = output.match(/QQBOT_NEW_VERSION=(\S+)/);
-      const newVersion = versionMatch?.[1] || "unknown";
-      report = reportMatch?.[1] || `✅ QQBot 升级完成: v${newVersion}`;
+    lines.push("", getUpgradeGuide(url));
+    return lines.join("\n");
+  },
+});
 
-      upgradeOk = newVersion !== "unknown" && newVersion !== PLUGIN_VERSION;
-      if (!upgradeOk && newVersion === PLUGIN_VERSION) {
-        report = `ℹ️ 已是最新版本 v${PLUGIN_VERSION}`;
+/**
+ * /qqbot-logs — 打包本地最近 2000 行日志，发送文件给用户
+ */
+registerCommand({
+  name: "qqbot-logs",
+  description: "打包本地最近 2000 行日志，发送文件给用户",
+  handler: () => {
+    const homeDir = process.env.HOME || "~";
+    const logDir = path.join(homeDir, ".openclaw", "logs");
+    const gatewayLog = path.join(logDir, "gateway.log");
+    const errLog = path.join(logDir, "gateway.err.log");
+
+    const lines: string[] = [];
+
+    // 读取 gateway.log 最后 2000 行
+    for (const logFile of [gatewayLog, errLog]) {
+      if (!fs.existsSync(logFile)) continue;
+      try {
+        const content = fs.readFileSync(logFile, "utf8");
+        const allLines = content.split("\n");
+        const tail = allLines.slice(-1000); // 每个文件取最后 1000 行
+        if (tail.length > 0) {
+          lines.push(`\n========== ${path.basename(logFile)} (last ${tail.length} lines) ==========\n`);
+          lines.push(...tail);
+        }
+      } catch {
+        lines.push(`[读取 ${path.basename(logFile)} 失败]`);
       }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      report = `❌ 升级失败: ${msg}`;
     }
 
-    if (upgradeOk) {
-      setTimeout(() => {
-        try { updatePluginsInstalls(); } catch {}
-        const cliNames = ["openclaw", "clawdbot", "moltbot"];
-        const tryRestart = (idx: number) => {
-          if (idx >= cliNames.length) { process.exit(0); return; }
-          const cli = cliNames[idx];
-          const child = spawn(cli, ["gateway", "restart"], {
-            detached: true, stdio: "ignore", env: process.env,
-          });
-          child.on("error", () => tryRestart(idx + 1));
-          child.unref();
-        };
-        tryRestart(0);
-      }, 2000);
+    if (lines.length === 0) {
+      return "⚠️ 未找到日志文件";
     }
 
-    return report;
+    // 写入临时文件
+    const tmpDir = path.join(homeDir, ".openclaw", "qqbot", "downloads");
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const tmpFile = path.join(tmpDir, `qqbot-logs-${timestamp}.txt`);
+    fs.writeFileSync(tmpFile, lines.join("\n"), "utf8");
+
+    const totalLines = lines.filter(l => !l.startsWith("=")).length;
+    return {
+      text: `📋 日志已打包（约 ${totalLines} 行），正在发送文件...`,
+      filePath: tmpFile,
+    };
   },
 });
 
@@ -220,7 +288,7 @@ registerCommand({
  *
  * @returns 回复文本（匹配成功），null（不匹配，应入队正常处理）
  */
-export async function matchSlashCommand(ctx: SlashCommandContext): Promise<string | null> {
+export async function matchSlashCommand(ctx: SlashCommandContext): Promise<SlashCommandResult> {
   const content = ctx.rawContent.trim();
   if (!content.startsWith("/")) return null;
 
@@ -240,61 +308,4 @@ export async function matchSlashCommand(ctx: SlashCommandContext): Promise<strin
 /** 获取插件版本号（供外部使用） */
 export function getPluginVersion(): string {
   return PLUGIN_VERSION;
-}
-
-/**
- * 更新 openclaw.json 中的 plugins.installs 记录。
- * - 如果 source 是 "path"（开发目录），改为 "npm" 并删除 sourcePath
- * - 更新 installPath、version、installedAt
- */
-function updatePluginsInstalls(): void {
-  const cliNames = ["openclaw", "clawdbot", "moltbot"];
-  let configPath = "";
-  let cliName = "";
-  for (const name of cliNames) {
-    const candidate = path.join(process.env.HOME || "~", `.${name}`, `${name}.json`);
-    if (fs.existsSync(candidate)) {
-      configPath = candidate;
-      cliName = name;
-      break;
-    }
-  }
-  if (!configPath) return;
-
-  const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
-  const extensionsDir = path.join(process.env.HOME || "~", `.${cliName}`, "extensions");
-  const installPath = path.join(extensionsDir, "openclaw-qqbot");
-
-  // 读取新安装的版本号
-  let newVersion = "unknown";
-  try {
-    const pkgPath = path.join(installPath, "package.json");
-    if (fs.existsSync(pkgPath)) {
-      newVersion = JSON.parse(fs.readFileSync(pkgPath, "utf8")).version || "unknown";
-    }
-  } catch {}
-
-  cfg.plugins = cfg.plugins || {};
-  cfg.plugins.installs = cfg.plugins.installs || {};
-
-  const existing = cfg.plugins.installs["openclaw-qqbot"] || {};
-
-  // 保留已有记录，只更新关键字段
-  cfg.plugins.installs["openclaw-qqbot"] = {
-    ...existing,
-    source: "npm",
-    installPath,
-    version: newVersion,
-    installedAt: new Date().toISOString(),
-  };
-  // 如果之前是 source:"path"，清除 sourcePath（指向开发目录）
-  delete cfg.plugins.installs["openclaw-qqbot"].sourcePath;
-
-  // 确保 plugins.entries 存在
-  cfg.plugins.entries = cfg.plugins.entries || {};
-  if (!cfg.plugins.entries["openclaw-qqbot"]) {
-    cfg.plugins.entries["openclaw-qqbot"] = { enabled: true };
-  }
-
-  fs.writeFileSync(configPath, JSON.stringify(cfg, null, 4) + "\n");
 }
