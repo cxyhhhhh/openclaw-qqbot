@@ -153,7 +153,7 @@ The plugin provides built-in slash commands that are intercepted before reaching
 
 > **You**: `/qqbot-ping`
 >
-> **QQBot**: 🏓 pong！⏱ Latency: 495ms (network: 494ms, plugin: 1ms)
+> **QQBot**: ✅ pong！⏱ Latency: 602ms (network: 602ms, plugin: 0ms)
 
 Measures end-to-end latency from QQ server push to plugin response, broken down into network transport and plugin processing time.
 
@@ -163,17 +163,17 @@ Measures end-to-end latency from QQ server push to plugin response, broken down 
 
 > **You**: `/qqbot-version`
 >
-> **QQBot**: 🦞 Framework: OpenClaw 2026.3.13 / 🤖 Plugin: v1.6.0 / ✅ Up to date
+> **QQBot**: 🦞 Framework: OpenClaw 2026.3.13 (61d171a) / 🤖 Plugin: v1.6.0 / 🌟 GitHub repo
 
-Shows framework version, plugin version, and update status at a glance.
+Shows framework version, plugin version, and a direct link to the official repository.
 
-<!-- <img width="360" src="" alt="Version Demo" /> -->
+<img width="360" src="docs/images/slash-version.jpg" alt="Version Demo" />
 
 #### `/qqbot-help` — Command List
 
 > **You**: `/qqbot-help`
 >
-> **QQBot**: Lists all available slash commands with descriptions.
+> **QQBot**: Lists all available slash commands with clickable shortcuts.
 
 <img width="360" src="docs/images/slash-help.jpg" alt="Help Demo" />
 
@@ -181,9 +181,11 @@ Shows framework version, plugin version, and update status at a glance.
 
 > **You**: `/qqbot-upgrade`
 >
-> **QQBot**: Shows current version, latest version (if available), and a link to the upgrade guide.
+> **QQBot**: 📌 Current version / ✅ Up to date / ⬆️ Upgrade guide / 🌟 GitHub repo
 
- <img width="360" src="docs/images/slash-upgrade.jpg" alt="Upgrade Demo" /> 
+Shows current version, update status, upgrade guide link, and official repository.
+
+<img width="360" src="docs/images/slash-upgrade.jpg" alt="Upgrade Demo" /> 
 
 #### `/qqbot-logs` — Log Export
 

@@ -136,13 +136,13 @@ registerCommand({
     const now = Date.now();
     const eventTime = new Date(ctx.eventTimestamp).getTime();
     if (isNaN(eventTime)) {
-      return `🏓 pong!`;
+      return `✅ pong!`;
     }
     const totalMs = now - eventTime;
     const qqToPlugin = ctx.receivedAt - eventTime;
     const pluginProcess = now - ctx.receivedAt;
     const lines = [
-      `🏓 pong！`,
+      `✅ pong！`,
       ``,
       `⏱ 延迟: ${totalMs}ms`,
       `  ├ 网络传输: ${qqToPlugin}ms`,
@@ -161,20 +161,18 @@ registerCommand({
   handler: () => {
     const frameworkVersion = getFrameworkVersion();
     const lines = [
-      `🦞 框架: ${frameworkVersion}`,
-      `🤖 qqbot插件: v${PLUGIN_VERSION}`,
+      `🦞框架版本：${frameworkVersion}`,
+      `🤖QQBot 插件版本：v${PLUGIN_VERSION}`,
     ];
     const info = getUpdateInfo();
     if (info.checkedAt === 0) {
-      // 尚未检查过
       lines.push(`⏳ 版本检查中...`);
     } else if (info.error) {
       lines.push(`⚠️ 版本检查失败`);
-    } else     if (info.hasUpdate && info.latest) {
-      lines.push(`🆕 有新版本: v${info.latest}，使用 /qqbot-upgrade 升级`);
-    } else {
-      lines.push(`✅ 当前已是最新版本`);
-    }
+    } else if (info.hasUpdate && info.latest) {
+      lines.push(`🆕最新可用版本：v${info.latest}，点击 <qqbot-cmd-input text="/qqbot-upgrade" show="/qqbot-upgrade"/> 查看升级指引`);
+    } 
+    lines.push(`🌟官方 GitHub 仓库：[点击前往](https://github.com/tencent-connect/openclaw-qqbot/)`);
     return lines.join("\n");
   },
 });
@@ -186,20 +184,16 @@ registerCommand({
   name: "qqbot-help",
   description: "查看所有指令以及用途",
   handler: () => {
-    const lines = [`**qqbot 插件 v${PLUGIN_VERSION}**`, ``];
+    const lines = [`### QQBot插件内置调试指令`, ``];
     for (const [name, cmd] of commands) {
-      lines.push(`- \`/${name}\` — ${cmd.description}`);
+      lines.push(`<qqbot-cmd-input text="/${name}" show="/${name}"/> ${cmd.description}`);
     }
+    lines.push(``, `> 插件版本 v${PLUGIN_VERSION}`);
     return lines.join("\n");
   },
 });
 
 const DEFAULT_UPGRADE_URL = "https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg";
-
-/** 升级说明文本 */
-function getUpgradeGuide(url: string): string {
-  return `📖 升级指引:\n${url}`;
-}
 
 /**
  * /qqbot-upgrade — 查看版本更新状态 + 升级指引
@@ -212,30 +206,30 @@ registerCommand({
     const info = getUpdateInfo();
     const lines: string[] = [];
 
+    lines.push(`📌当前版本：v${PLUGIN_VERSION}`);
+
     if (info.checkedAt === 0) {
-      lines.push(`🤖 当前版本: v${PLUGIN_VERSION}`);
       lines.push(`⏳ 版本检查中，请稍后再试`);
     } else if (info.error) {
-      lines.push(`🤖 当前版本: v${PLUGIN_VERSION}`);
       lines.push(`⚠️ 版本检查失败`);
     } else if (info.hasUpdate && info.latest) {
-      lines.push(`🤖 当前版本: v${PLUGIN_VERSION}`);
-      lines.push(`🆕 最新版本: v${info.latest}`);
+      lines.push(`🆕最新可用版本：v${info.latest}`);
     } else {
-      lines.push(`✅ 当前已是最新版本 v${PLUGIN_VERSION}`);
+      lines.push(`✅ 当前已是最新版本`);
     }
 
-    lines.push("", getUpgradeGuide(url));
+    lines.push(`⬆️升级指引：[点击查看](${url})`);
+    lines.push(`🌟官方 GitHub 仓库：[点击前往](https://github.com/tencent-connect/openclaw-qqbot/)`);
     return lines.join("\n");
   },
 });
 
 /**
- * /qqbot-logs — 打包本地最近 2000 行日志，发送文件给用户
+ * /qqbot-logs — 导出本地日志文件
  */
 registerCommand({
   name: "qqbot-logs",
-  description: "打包本地最近 2000 行日志，发送文件给用户",
+  description: "导出本地日志文件",
   handler: () => {
     const homeDir = process.env.HOME || "~";
     const logDir = path.join(homeDir, ".openclaw", "logs");

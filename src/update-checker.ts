@@ -38,6 +38,19 @@ let _lastInfo: UpdateInfo = {
 
 let _checking = false;
 
+/** 已通知过的版本号，避免同一版本重复推送 */
+let _notifiedVersion: string | null = null;
+
+type UpdateFoundCallback = (info: UpdateInfo) => void;
+let _onUpdateFound: UpdateFoundCallback | null = null;
+
+/**
+ * 注册新版本发现回调（仅在首次检测到某个新版本时触发一次）
+ */
+export function onUpdateFound(cb: UpdateFoundCallback): void {
+  _onUpdateFound = cb;
+}
+
 export function triggerUpdateCheck(log?: {
   info: (msg: string) => void;
   error: (msg: string) => void;
@@ -77,6 +90,11 @@ export function triggerUpdateCheck(log?: {
         _lastInfo = { current: CURRENT_VERSION, latest: compareTarget, hasUpdate, checkedAt: now };
         if (hasUpdate) {
           log?.info?.(`[qqbot:update-checker] new version available: ${compareTarget} (current: ${CURRENT_VERSION})`);
+          // 首次发现该版本时触发回调
+          if (_onUpdateFound && compareTarget !== _notifiedVersion) {
+            _notifiedVersion = compareTarget;
+            _onUpdateFound(_lastInfo);
+          }
         }
       } catch (parseErr) {
         _lastInfo = { current: CURRENT_VERSION, latest: null, hasUpdate: false, checkedAt: now, error: String(parseErr) };

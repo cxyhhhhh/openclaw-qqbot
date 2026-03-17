@@ -148,7 +148,7 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 > **你**：`/qqbot-ping`
 >
-> **QQBot**：🏓 pong！⏱ 延迟: 495ms（网络传输: 494ms，插件处理: 1ms）
+> **QQBot**：✅ pong！⏱ 延迟: 602ms（网络传输: 602ms，插件处理: 0ms）
 
 测量从 QQ 服务器推送到插件响应的端到端延迟，细分网络传输和插件处理两段耗时。
 
@@ -158,17 +158,17 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 > **你**：`/qqbot-version`
 >
-> **QQBot**：🦞 框架: OpenClaw 2026.3.13 / 🤖 插件: v1.6.0 / ✅ 已是最新
+> **QQBot**：🦞框架版本：OpenClaw 2026.3.13 (61d171a) / 🤖QQBot 插件版本：v1.6.0 / 🌟官方 GitHub 仓库
 
-一目了然查看框架版本、插件版本和更新状态。
+一目了然查看框架版本、插件版本，并可直接跳转官方仓库。
 
-<!-- <img width="360" src="" alt="Version 演示" /> -->
+<img width="360" src="docs/images/slash-version.jpg" alt="Version 演示" />
 
 #### `/qqbot-help` — 指令列表
 
 > **你**：`/qqbot-help`
 >
-> **QQBot**：列出所有可用的斜杠指令及说明。
+> **QQBot**：列出所有可用的斜杠指令及说明，指令可点击快速输入。
 
 <img width="360" src="docs/images/slash-help.jpg" alt="Help 演示" />
 
@@ -176,9 +176,11 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 > **你**：`/qqbot-upgrade`
 >
-> **QQBot**：显示当前版本、最新版本（如有更新）及升级文档链接。
+> **QQBot**：📌当前版本 / ✅当前已是最新版本 / ⬆️升级指引 / 🌟官方 GitHub 仓库
 
- <img width="360" src="docs/images/slash-upgrade.jpg" alt="Upgrade Demo" /> 
+显示当前版本、更新状态、升级文档链接及官方仓库入口。
+
+<img width="360" src="docs/images/slash-upgrade.jpg" alt="Upgrade 演示" /> 
 
 #### `/qqbot-logs` — 日志导出
 

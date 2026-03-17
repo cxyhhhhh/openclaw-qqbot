@@ -8,7 +8,7 @@
 
 ### 新增
 
-- **斜杠指令体系**：新增 `/qqbot-ping`、`/qqbot-version`、`/qqbot-help`、`/qqbot-commands`、`/qqbot-upgrade`、`/qqbot-logs` 六个插件级指令。
+- **斜杠指令体系**：新增 `/qqbot-ping`、`/qqbot-version`、`/qqbot-help`、`/qqbot-upgrade`、`/qqbot-logs` 五个插件级指令。
 - **版本检查**：后台定时检查 npm 最新版本，`/qqbot-version` 展示更新状态，`/qqbot-upgrade` 提供升级指引。
 - **启动问候语**：区分首次安装与普通重启，发送不同问候语。
 - **日志下载**：`/qqbot-logs` 打包最近 2000 行日志发送文件给用户。
@@ -22,6 +22,7 @@
 - **问候语防抖**：60s 内重复重启不再重复发送问候语（解决升级过程中刷屏问题）。
 - **主动消息 48h 过滤**：发送启动问候前过滤超过 48h 未交互的用户，减少无效 500 错误。
 - **Token 缓存刷新阈值**：从硬编码 5 分钟改为 `min(5min, remaining/3)`，修复短有效期 token 缓存失效导致每分钟重复请求的问题。
+- **精简上下文注入**：优化注入给 OpenClaw 的上下文信息，减少冗余内容，降低 token 消耗。
 
 ## [1.5.7] - 2026-03-12
 

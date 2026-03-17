@@ -2,13 +2,13 @@ import WebSocket from "ws";
 import path from "node:path";
 import * as fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveC2CMessage, sendProactiveGroupMessage } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveC2CMessage } from "./api.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers, listKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type SlashCommandFileResult, type QueueSnapshot } from "./slash-commands.js";
-import { triggerUpdateCheck } from "./update-checker.js";
+import { triggerUpdateCheck, onUpdateFound, formatUpdateNotice } from "./update-checker.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
@@ -355,13 +355,11 @@ const STARTUP_MARKER_FILE = path.join(getQQBotDataDir("data"), "startup-marker.j
 /**
  * 判断是否为首次安装或版本更新，返回对应的问候语。
  * - 首次安装 / 版本变更 → "Haha，我的'灵魂'已上线，随时等你吩咐。"
- * - 普通重启             → "我重新登上了，有事随时找我。"
- * - 短时间内重复重启（60s 内） → null（跳过，避免刷屏）
+ * - 普通重启（同版本） → null（不发送）
  */
 function getStartupGreeting(): string | null {
   const currentVersion = getPluginVersion();
   let isFirstOrUpdated = true;
-  let lastGreetedAt = 0;
 
   try {
     if (fs.existsSync(STARTUP_MARKER_FILE)) {
@@ -369,17 +367,13 @@ function getStartupGreeting(): string | null {
       if (data.version === currentVersion) {
         isFirstOrUpdated = false;
       }
-      if (data.greetedAt) {
-        lastGreetedAt = new Date(data.greetedAt).getTime() || 0;
-      }
     }
   } catch {
     // 文件损坏或不存在，视为首次
   }
 
-  // 防抖：60s 内重复重启不再发送问候（升级场景 stop→start 间隔很短）
-  const GREETING_DEBOUNCE_MS = 60_000;
-  if (!isFirstOrUpdated && lastGreetedAt > 0 && Date.now() - lastGreetedAt < GREETING_DEBOUNCE_MS) {
+  // 普通重启（同版本）不发送问候语
+  if (!isFirstOrUpdated) {
     return null;
   }
 
@@ -394,9 +388,7 @@ function getStartupGreeting(): string | null {
     // ignore
   }
 
-  return isFirstOrUpdated
-    ? `Haha，我的'灵魂'已上线，随时等你吩咐。`
-    : `我重新登上了，有事随时找我。`;
+  return `Haha，我的'灵魂'已上线，随时等你吩咐。`;
 }
 
 /**
@@ -420,6 +412,33 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
   // 后台版本检查（detached 子进程，零阻塞）
   triggerUpdateCheck(log);
+
+  // 注册新版本通知回调：仅发给管理员，带防抖
+  let lastUpdateNotifyAt = 0;
+  const UPDATE_NOTIFY_DEBOUNCE_MS = 5 * 60 * 1000; // 5 分钟内不重复通知
+  onUpdateFound(async (info) => {
+    try {
+      // 防抖：避免短时间内重复推送
+      const now = Date.now();
+      if (now - lastUpdateNotifyAt < UPDATE_NOTIFY_DEBOUNCE_MS) {
+        log?.debug?.(`[qqbot:${account.accountId}] Update notification debounced`);
+        return;
+      }
+      const notice = formatUpdateNotice(info);
+      if (!notice) return;
+      const adminId = resolveAdminOpenId();
+      if (!adminId) {
+        log?.debug?.(`[qqbot:${account.accountId}] No admin or known user to send update notification`);
+        return;
+      }
+      const token = await getAccessToken(account.appId, account.clientSecret);
+      await sendProactiveC2CMessage(token, adminId, notice);
+      lastUpdateNotifyAt = Date.now();
+      log?.info(`[qqbot:${account.accountId}] Sent update notification to admin: ${adminId}`);
+    } catch (err) {
+      log?.debug?.(`[qqbot:${account.accountId}] Failed to send update notification to admin: ${err}`);
+    }
+  });
 
   // 初始化 API 配置（markdown 支持）
   initApiConfig({
@@ -498,7 +517,47 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   // 使用模块级 isFirstReadyGlobal，确保只有进程级重启才发送问候语
   // health-monitor 重连不会重新初始化为 true
 
-  /** 异步发送启动问候语（READY 或 RESUMED 时调用） */
+  const ADMIN_MARKER_FILE = path.join(getQQBotDataDir("data"), `admin-${account.accountId}.json`);
+
+  /**
+   * 读取已持久化的管理员 openid
+   */
+  const loadAdminOpenId = (): string | undefined => {
+    try {
+      if (fs.existsSync(ADMIN_MARKER_FILE)) {
+        const data = JSON.parse(fs.readFileSync(ADMIN_MARKER_FILE, "utf8"));
+        if (data.openid) return data.openid;
+      }
+    } catch { /* 文件损坏视为无 */ }
+    return undefined;
+  };
+
+  /**
+   * 将管理员 openid 持久化到文件
+   */
+  const saveAdminOpenId = (openid: string): void => {
+    try {
+      fs.writeFileSync(ADMIN_MARKER_FILE, JSON.stringify({ openid, savedAt: new Date().toISOString() }));
+    } catch { /* ignore */ }
+  };
+
+  /**
+   * 解析管理员 openid：
+   * 1. 优先读持久化文件（稳定）
+   * 2. fallback 取第一个私聊用户，并写入文件锁定
+   */
+  const resolveAdminOpenId = (): string | undefined => {
+    const saved = loadAdminOpenId();
+    if (saved) return saved;
+    const first = listKnownUsers({ accountId: account.accountId, type: "c2c", sortBy: "firstSeenAt", sortOrder: "asc", limit: 1 })[0]?.openid;
+    if (first) {
+      saveAdminOpenId(first);
+      log?.info(`[qqbot:${account.accountId}] Auto-detected admin openid: ${first} (persisted)`);
+    }
+    return first;
+  };
+
+  /** 异步发送启动问候语（仅发给管理员） */
   const sendStartupGreetings = (trigger: "READY" | "RESUMED") => {
     (async () => {
       try {
@@ -507,35 +566,21 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (debounced, trigger=${trigger})`);
           return;
         }
-        log?.info(`[qqbot:${account.accountId}] Sending startup greeting (trigger=${trigger}): "${greeting}"`);
+        const adminId = resolveAdminOpenId();
+        if (!adminId) {
+          log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (no admin or known user)`);
+          return;
+        }
+        log?.info(`[qqbot:${account.accountId}] Sending startup greeting to admin (trigger=${trigger}): "${greeting}"`);
         const token = await getAccessToken(account.appId, account.clientSecret);
-        const users = listKnownUsers({ accountId: account.accountId, type: "c2c" });
-        for (const user of users) {
-          try {
-            await sendProactiveC2CMessage(token, user.openid, greeting);
-            log?.info(`[qqbot:${account.accountId}] Sent startup greeting to c2c:${user.openid}`);
-          } catch (err) {
-            log?.debug?.(`[qqbot:${account.accountId}] Failed to send startup greeting to c2c:${user.openid}: ${err}`);
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-        const groups = listKnownUsers({ accountId: account.accountId, type: "group" });
-        const sentGroups = new Set<string>();
-        for (const user of groups) {
-          const gid = user.groupOpenid;
-          if (!gid || sentGroups.has(gid)) continue;
-          sentGroups.add(gid);
-          try {
-            await sendProactiveGroupMessage(token, gid, greeting);
-            log?.info(`[qqbot:${account.accountId}] Sent startup greeting to group:${gid}`);
-          } catch (err) {
-            log?.debug?.(`[qqbot:${account.accountId}] Failed to send startup greeting to group:${gid}: ${err}`);
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-        log?.info(`[qqbot:${account.accountId}] Startup greetings sent (${users.length} c2c, ${sentGroups.size} groups)`);
+        const GREETING_TIMEOUT_MS = 10_000;
+        await Promise.race([
+          sendProactiveC2CMessage(token, adminId, greeting),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Startup greeting send timeout (10s)")), GREETING_TIMEOUT_MS)),
+        ]);
+        log?.info(`[qqbot:${account.accountId}] Sent startup greeting to admin: ${adminId}`);
       } catch (err) {
-        log?.error(`[qqbot:${account.accountId}] Failed to send startup greetings: ${err}`);
+        log?.error(`[qqbot:${account.accountId}] Failed to send startup greeting: ${err}`);
       }
     })();
   };
