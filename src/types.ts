@@ -175,6 +175,8 @@ export interface GroupMessageEvent {
   author: {
     id: string;
     member_openid: string;
+    username?: string;
+    bot?: boolean;
   };
   content: string;
   id: string;
@@ -186,6 +188,17 @@ export interface GroupMessageEvent {
     ext?: string[];
   };
   attachments?: MessageAttachment[];
+  /** @ 提及列表（仅 GROUP_MESSAGE_CREATE 携带） */
+  mentions?: Array<{
+    scope?: "all" | "single";
+    id?: string;
+    user_openid?: string;
+    member_openid?: string;
+    nickname?: string;
+    bot?: boolean;
+    /** 是否 @ 的是自己（机器人） */
+    is_you?: boolean;
+  }>;
 }
 
 /**

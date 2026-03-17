@@ -130,7 +130,8 @@ const IMAGE_SERVER_DIR = process.env.QQBOT_IMAGE_SERVER_DIR || getQQBotDataDir("
 
 // 消息队列配置（异步处理，防止阻塞心跳）
 const MESSAGE_QUEUE_SIZE = 1000; // 最大队列长度（全局总量）
-const PER_USER_QUEUE_SIZE = 20; // 单用户最大排队数
+const PER_USER_QUEUE_SIZE = 20; // 单用户（c2c/dm）最大排队数
+const PER_GROUP_QUEUE_SIZE = 50; // 群聊最大排队数（群消息流量更大）
 const MAX_CONCURRENT_USERS = 10; // 最大同时处理的用户数
 
 // ============ 消息回复限流器 ============
@@ -262,6 +263,8 @@ interface QueuedMessage {
   type: "c2c" | "guild" | "dm" | "group";
   senderId: string;
   senderName?: string;
+  /** 发送者是否为机器人 */
+  senderIsBot?: boolean;
   content: string;
   messageId: string;
   timestamp: string;
@@ -273,6 +276,25 @@ interface QueuedMessage {
   refMsgIdx?: string;
   /** 当前消息自身的 refIdx（供将来被引用） */
   msgIdx?: string;
+  /** 原始事件类型（如 GROUP_AT_MESSAGE_CREATE / GROUP_MESSAGE_CREATE） */
+  eventType?: string;
+  /** @ 提及列表（仅 group 类型有效） */
+  mentions?: Array<{
+    scope?: "all" | "single";
+    id?: string;
+    user_openid?: string;
+    member_openid?: string;
+    nickname?: string;
+    bot?: boolean;
+    is_you?: boolean;
+  }>;
+  /** 消息场景信息 */
+  messageScene?: {
+    source?: string;
+    ext?: string[];
+  };
+  /** 合并消息标记：当多条群消息被合并处理时，记录原始消息数量 */
+  _mergedCount?: number;
 }
 
 /**
@@ -613,6 +635,80 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     return `dm:${msg.senderId}`;
   };
 
+  /**
+   * 将多条群消息合并为一条，用于群聊场景下排队消息的批量处理。
+   * - content 拼接为多行，每行带发送者前缀
+   * - 附件合并
+   * - messageId / msgIdx / timestamp 取最后一条（用于回复引用）
+   * - mentions 合并去重
+   * - 如果有任意一条 @了你（is_you），合并结果也标记 @你
+   * - senderIsBot 只要有一条不是 bot 就算非 bot
+   */
+  const mergeGroupMessages = (batch: QueuedMessage[]): QueuedMessage => {
+    if (batch.length === 1) return batch[0];
+
+    const last = batch[batch.length - 1];
+    const first = batch[0];
+
+    // 拼接内容：每条消息带发送者前缀，用分隔线区分
+    const mergedContent = batch
+      .map((m) => {
+        const name = m.senderName ?? m.senderId;
+        return `[${name}]: ${m.content}`;
+      })
+      .join("\n");
+
+    // 合并附件
+    const mergedAttachments: QueuedMessage["attachments"] = [];
+    for (const m of batch) {
+      if (m.attachments?.length) {
+        mergedAttachments.push(...m.attachments);
+      }
+    }
+
+    // 合并 mentions（去重 by member_openid/id）
+    const seenMentionIds = new Set<string>();
+    const mergedMentions: NonNullable<QueuedMessage["mentions"]> = [];
+    let hasAtYouEvent = false;
+    for (const m of batch) {
+      if (m.eventType === "GROUP_AT_MESSAGE_CREATE") {
+        hasAtYouEvent = true;
+      }
+      if (m.mentions) {
+        for (const mt of m.mentions) {
+          const key = mt.member_openid ?? mt.id ?? mt.user_openid ?? "";
+          if (key && seenMentionIds.has(key)) continue;
+          if (key) seenMentionIds.add(key);
+          mergedMentions.push(mt);
+        }
+      }
+    }
+
+    // senderIsBot: 只要有一条来自非 bot 用户，就算非 bot（确保不被过度 SKIP）
+    const allFromBot = batch.every((m) => m.senderIsBot);
+
+    return {
+      type: last.type,
+      senderId: last.senderId,
+      senderName: last.senderName,
+      senderIsBot: allFromBot,
+      content: mergedContent,
+      messageId: last.messageId,
+      timestamp: last.timestamp,
+      channelId: last.channelId,
+      guildId: last.guildId,
+      groupOpenid: last.groupOpenid,
+      attachments: mergedAttachments.length > 0 ? mergedAttachments : undefined,
+      refMsgIdx: first.refMsgIdx,
+      msgIdx: last.msgIdx,
+      eventType: hasAtYouEvent ? "GROUP_AT_MESSAGE_CREATE" : last.eventType,
+      mentions: mergedMentions.length > 0 ? mergedMentions : undefined,
+      messageScene: last.messageScene,
+      /** 标记这是合并消息，携带原始消息数量 */
+      _mergedCount: batch.length,
+    } as QueuedMessage;
+  };
+
   const enqueueMessage = (msg: QueuedMessage): void => {
     const peerId = getMessagePeerId(msg);
     let queue = userQueues.get(peerId);
@@ -621,10 +717,20 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       userQueues.set(peerId, queue);
     }
 
-    // 单用户队列溢出保护
-    if (queue.length >= PER_USER_QUEUE_SIZE) {
-      const dropped = queue.shift();
-      log?.error(`[qqbot:${account.accountId}] Per-user queue full for ${peerId}, dropping oldest message ${dropped?.messageId}`);
+    // 群聊和非群聊使用不同的队列上限
+    const maxSize = (msg.type === "group" || msg.type === "guild") ? PER_GROUP_QUEUE_SIZE : PER_USER_QUEUE_SIZE;
+
+    // 队列溢出保护
+    if (queue.length >= maxSize) {
+      // 优先丢弃 bot 发送的消息，减少用户消息被丢弃的概率
+      const botIdx = queue.findIndex(m => m.senderIsBot);
+      if (botIdx >= 0) {
+        const dropped = queue.splice(botIdx, 1)[0];
+        log?.info(`[qqbot:${account.accountId}] Queue full for ${peerId}, dropping bot message ${dropped?.messageId}`);
+      } else {
+        const dropped = queue.shift();
+        log?.error(`[qqbot:${account.accountId}] Queue full for ${peerId}, dropping oldest message ${dropped?.messageId}`);
+      }
     }
 
     // 全局总量保护
@@ -658,6 +764,28 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
     try {
       while (queue.length > 0 && !isAborted) {
+        const isGroupPeer = peerId.startsWith("group:") || peerId.startsWith("guild:");
+
+        // 群聊场景：将队列中排队的多条消息合并为一条，一次性发给模型
+        if (isGroupPeer && queue.length > 1 && handleMessageFnRef) {
+          const batch = queue.splice(0, queue.length);
+          totalEnqueued = Math.max(0, totalEnqueued - batch.length);
+
+          const merged = mergeGroupMessages(batch);
+          log?.info(
+            `[qqbot:${account.accountId}] Merged ${batch.length} queued group messages for ${peerId} into one`
+          );
+
+          try {
+            await handleMessageFnRef(merged);
+            messagesProcessed += batch.length;
+          } catch (err) {
+            log?.error(`[qqbot:${account.accountId}] Message processor error for ${peerId} (merged batch of ${batch.length}): ${err}`);
+          }
+          continue;
+        }
+
+        // 非群聊 或 队列只剩 1 条：逐条处理
         const msg = queue.shift()!;
         totalEnqueued = Math.max(0, totalEnqueued - 1);
         try {
@@ -871,6 +999,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         type: "c2c" | "guild" | "dm" | "group";
         senderId: string;
         senderName?: string;
+        senderIsBot?: boolean;
         content: string;
         messageId: string;
         timestamp: string;
@@ -880,6 +1009,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         attachments?: Array<{ content_type: string; url: string; filename?: string; voice_wav_url?: string; asr_refer_text?: string }>;
         refMsgIdx?: string;
         msgIdx?: string;
+        eventType?: string;
+        mentions?: Array<{ scope?: "all" | "single"; id?: string; user_openid?: string; member_openid?: string; username?: string; bot?: boolean; is_you?: boolean }>;
+        messageScene?: { source?: string; ext?: string[] };
       }) => {
 
         log?.debug?.(`[qqbot:${account.accountId}] Received message: ${JSON.stringify(event)}`);
@@ -894,29 +1026,31 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           direction: "inbound",
         });
 
-        // 发送输入状态提示（非关键，失败不影响主流程）
+        // 发送输入状态提示（仅 C2C 私聊支持，群聊/频道不支持 InputNotify）
         // 同时从响应中获取 ref_idx，用于缓存入站消息
         let inputNotifyRefIdx: string | undefined;
-        try {
-          let token = await getAccessToken(account.appId, account.clientSecret);
+        if (event.type === "c2c") {
           try {
-            const notifyResponse = await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
-            inputNotifyRefIdx = notifyResponse.refIdx;
-          } catch (notifyErr) {
-            const errMsg = String(notifyErr);
-            if (errMsg.includes("token") || errMsg.includes("401") || errMsg.includes("11244")) {
-              log?.info(`[qqbot:${account.accountId}] InputNotify token expired, refreshing...`);
-              clearTokenCache(account.appId);
-              token = await getAccessToken(account.appId, account.clientSecret);
+            let token = await getAccessToken(account.appId, account.clientSecret);
+            try {
               const notifyResponse = await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
               inputNotifyRefIdx = notifyResponse.refIdx;
-            } else {
-              throw notifyErr;
+            } catch (notifyErr) {
+              const errMsg = String(notifyErr);
+              if (errMsg.includes("token") || errMsg.includes("401") || errMsg.includes("11244")) {
+                log?.info(`[qqbot:${account.accountId}] InputNotify token expired, refreshing...`);
+                clearTokenCache(account.appId);
+                token = await getAccessToken(account.appId, account.clientSecret);
+                const notifyResponse = await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
+                inputNotifyRefIdx = notifyResponse.refIdx;
+              } else {
+                throw notifyErr;
+              }
             }
+            log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}${inputNotifyRefIdx ? `, got refIdx=${inputNotifyRefIdx}` : ""}`);
+          } catch (err) {
+            log?.error(`[qqbot:${account.accountId}] sendC2CInputNotify error: ${err}`);
           }
-          log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}${inputNotifyRefIdx ? `, got refIdx=${inputNotifyRefIdx}` : ""}`);
-        } catch (err) {
-          log?.error(`[qqbot:${account.accountId}] sendC2CInputNotify error: ${err}`);
         }
 
         const isGroupChat = event.type === "guild" || event.type === "group";
@@ -1113,7 +1247,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         // 解析 QQ 表情标签，将 <faceType=...,ext="base64"> 替换为 【表情: 中文名】
         const parsedContent = parseFaceTags(event.content);
-        const userContent = voiceText
+        let userContent = voiceText
           ? (parsedContent.trim() ? `${parsedContent}\n${voiceText}` : voiceText) + attachmentInfo
           : parsedContent + attachmentInfo;
 
@@ -1256,8 +1390,46 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
         const dynamicCtx = dynLines.length > 0 ? dynLines.join("\n") + "\n" : "";
 
+        // --- 群消息上下文提示（帮助模型判断是否需要回复） ---
+        let groupMsgHint = "";
+        if (event.type === "group") {
+          const scene = event.messageScene?.source ?? "unknown";
+          if (event.senderIsBot) {
+            // 发送者是机器人，严格限制回复以避免机器人之间互相聊天
+            groupMsgHint = `这是群消息，发送者是另一个机器人。仅当对方明确向你提问或请求你协助具体任务时，简洁回复；闲聊、打招呼、附和、讨论计划等不需要你参与的内容，只回复"[SKIP]"，不要输出任何其他文字。避免与机器人进行多轮对话。`;
+          } else {
+            const isAtYou = event.eventType === "GROUP_AT_MESSAGE_CREATE" || (event.mentions?.some(m => m.is_you) ?? false);
+            if (isAtYou) {
+              groupMsgHint = `这是群消息，用户@了你，请正常回复。不要重复和扩散话题，请聚焦上下文。如果结合上下文判断不需要回复，则只回复"[SKIP]"，不要输出任何其他文字。`;
+            } else {
+              groupMsgHint = `这是群消息，用户没有@你。不要重复和扩散话题，请聚焦上下文。请结合聊天上下文和消息相关度判断是否回复：如果消息与你相关、或上下文中你正在参与对话，则回复；否则只回复"[SKIP]"，不要输出任何其他文字。`;
+            }
+          }
+        }
+
+        // 合并消息额外提示：告知模型这是多条排队消息的合并
+        const mergedCount = (event as QueuedMessage)._mergedCount;
+        if (mergedCount && mergedCount > 1) {
+          groupMsgHint += `\n注意：以下内容是群里${mergedCount}条排队消息的合并，请一次性针对所有相关内容统一回复，不需要逐条回复。`;
+        }
+
+        // 将 <@member_openid> 替换为 @username
+        if (event.mentions?.length) {
+          for (const m of event.mentions) {
+            if (m.member_openid && m.username) {
+              userContent = userContent.replace(new RegExp(`<@${m.member_openid}>`, "g"), `@${m.username}`);
+            }
+          }
+        }
+
+        // 群消息 user prompt 带上发送者昵称（合并消息已内嵌发送者前缀，不再重复添加）
+        const isMergedMsg = mergedCount && mergedCount > 1;
+        const senderPrefix = (event.type === "group" && !isMergedMsg) ? `[${event.senderName ?? event.senderId}]: ` : "";
+        const isAtYouTag = event.type === "group"
+          ? (event.eventType === "GROUP_AT_MESSAGE_CREATE" || (event.mentions?.some(m => m.is_you) ?? false) ? " (@你)" : "")
+          : "";
         // 命令直接透传，不注入上下文
-        const userMessage = `${quotePart}${userContent}`;
+        const userMessage = senderPrefix ? `${senderPrefix}${quotePart}${userContent}${isAtYouTag}` : `${quotePart}${userContent}`;
         const agentBody = userContent.startsWith("/")
           ? userContent
           : `${systemPrompts.join("\n")}\n\n${dynamicCtx}${userMessage}`;
@@ -1304,6 +1476,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           SessionKey: route.sessionKey,
           AccountId: route.accountId,
           ChatType: isGroupChat ? "group" : "direct",
+          GroupSystemPrompt: groupMsgHint || undefined,
           SenderId: event.senderId,
           SenderName: event.senderName,
           Provider: "qqbot",
@@ -1564,6 +1737,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
                 let replyText = payload.text ?? "";
                 
+                // 群消息：模型回复 [SKIP] 表示无需回复，跳过发送
+                if (event.type === "group" && replyText.trim() === "[SKIP]") {
+                  log?.info(`[qqbot:${account.accountId}] Model decided to skip group message from ${event.senderId}: ${event.content?.slice(0, 50)}`);
+                  return;
+                }
+                
                 // ============ 媒体标签解析 ============
                 // 支持五种标签:
                 //   <qqimg>路径</qqimg>      — 图片
@@ -1695,7 +1874,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                           if (event.type === "c2c") {
                             return await sendC2CMessage(token, event.senderId, item.content, event.messageId, ref);
                           } else if (event.type === "group" && event.groupOpenid) {
-                            return await sendGroupMessage(token, event.groupOpenid, item.content, event.messageId);
+                            return await sendGroupMessage(token, event.groupOpenid, item.content, event.messageId, ref);
                           } else if (event.channelId) {
                             return await sendChannelMessage(token, event.channelId, item.content, event.messageId);
                           }
@@ -2308,7 +2487,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                         if (event.type === "c2c") {
                           return await sendC2CMessage(token, event.senderId, textWithoutImages, event.messageId, ref);
                         } else if (event.type === "group" && event.groupOpenid) {
-                          return await sendGroupMessage(token, event.groupOpenid, textWithoutImages, event.messageId);
+                          return await sendGroupMessage(token, event.groupOpenid, textWithoutImages, event.messageId, ref);
                         } else if (event.channelId) {
                           return await sendChannelMessage(token, event.channelId, textWithoutImages, event.messageId);
                         }
@@ -2619,10 +2798,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 });
               } else if (t === "GROUP_AT_MESSAGE_CREATE") {
                 const event = d as GroupMessageEvent;
-                // P1-3: 记录已知用户（群组用户）
+                // 被 @ 的消息，直接入队回复
                 recordKnownUser({
                   openid: event.author.member_openid,
                   type: "group",
+                  nickname: event.author.username,
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
@@ -2630,6 +2810,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 trySlashCommandOrEnqueue({
                   type: "group",
                   senderId: event.author.member_openid,
+                  senderName: event.author.username,
                   content: event.content,
                   messageId: event.id,
                   timestamp: event.timestamp,
@@ -2637,7 +2818,70 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   attachments: event.attachments,
                   refMsgIdx: groupRefs.refMsgIdx,
                   msgIdx: groupRefs.msgIdx,
+                  eventType: "GROUP_AT_MESSAGE_CREATE",
+                  mentions: event.mentions,
+                  messageScene: event.message_scene,
                 });
+              } else if (t === "GROUP_MESSAGE_CREATE") {
+                const event = d as GroupMessageEvent;
+                recordKnownUser({
+                  openid: event.author.member_openid,
+                  type: "group",
+                  nickname: event.author.username,
+                  groupOpenid: event.group_openid,
+                  accountId: account.accountId,
+                });
+                const groupRefs = parseRefIndices(event.message_scene?.ext);
+                trySlashCommandOrEnqueue({
+                  type: "group",
+                  senderId: event.author.member_openid,
+                  senderName: event.author.username,
+                  senderIsBot: event.author.bot,
+                  content: event.content,
+                  messageId: event.id,
+                  timestamp: event.timestamp,
+                  groupOpenid: event.group_openid,
+                  attachments: event.attachments,
+                  refMsgIdx: groupRefs.refMsgIdx,
+                  msgIdx: groupRefs.msgIdx,
+                  eventType: "GROUP_MESSAGE_CREATE",
+                  mentions: event.mentions,
+                  messageScene: event.message_scene,
+                });
+              } else if (t === "GROUP_ADD_ROBOT") {
+                // 机器人被添加到群聊
+                const event = d as { timestamp: string; group_openid: string; op_member_openid: string };
+                log?.info(`[qqbot:${account.accountId}] Bot added to group: ${event.group_openid} by ${event.op_member_openid}`);
+                // 记录群信息
+                recordKnownUser({
+                  openid: event.op_member_openid,
+                  type: "group",
+                  groupOpenid: event.group_openid,
+                  accountId: account.accountId,
+                });
+                // 发送入群欢迎消息
+                (async () => {
+                  try {
+                    const token = await getAccessToken(account.appId, account.clientSecret);
+                    const greeting = `嗨～我来啦！有事随时喊我就好 😄`;
+                    await sendProactiveGroupMessage(token, event.group_openid, greeting);
+                    log?.info(`[qqbot:${account.accountId}] Sent welcome message to group: ${event.group_openid}`);
+                  } catch (err) {
+                    log?.debug?.(`[qqbot:${account.accountId}] Failed to send welcome message to group ${event.group_openid}: ${err}`);
+                  }
+                })();
+              } else if (t === "GROUP_DEL_ROBOT") {
+                // 机器人被移出群聊
+                const event = d as { timestamp: string; group_openid: string; op_member_openid: string };
+                log?.info(`[qqbot:${account.accountId}] Bot removed from group: ${event.group_openid} by ${event.op_member_openid}`);
+              } else if (t === "GROUP_MSG_REJECT") {
+                // 群聊关闭机器人主动消息通知
+                const event = d as { timestamp: number; group_openid: string; op_member_openid: string };
+                log?.info(`[qqbot:${account.accountId}] Group ${event.group_openid} rejected bot proactive messages (by ${event.op_member_openid})`);
+              } else if (t === "GROUP_MSG_RECEIVE") {
+                // 群聊开启机器人主动消息通知
+                const event = d as { timestamp: number; group_openid: string; op_member_openid: string };
+                log?.info(`[qqbot:${account.accountId}] Group ${event.group_openid} accepted bot proactive messages (by ${event.op_member_openid})`);
               }
               break;
 
