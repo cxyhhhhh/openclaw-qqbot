@@ -25,6 +25,7 @@ cd "$PROJ_DIR"
 APPID=""
 SECRET=""
 MARKDOWN=""
+QQBOT_ENV_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -40,6 +41,10 @@ while [[ $# -gt 0 ]]; do
             MARKDOWN="$2"
             shift 2
             ;;
+        --env)
+            QQBOT_ENV_ARG="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "用法: $0 [选项]"
             echo ""
@@ -47,6 +52,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --appid <appid>       QQ机器人 appid"
             echo "  --secret <secret>     QQ机器人 secret"
             echo "  --markdown <yes|no>   是否启用 markdown 消息格式（默认: no）"
+            echo "  --env <test|production>  接入环境（test=沙箱环境，production=正式环境，默认: production）"
             echo "  -h, --help            显示帮助信息"
             echo ""
             echo "也可以通过环境变量设置:"
@@ -54,6 +60,7 @@ while [[ $# -gt 0 ]]; do
             echo "  QQBOT_SECRET          QQ机器人 secret"
             echo "  QQBOT_TOKEN           QQ机器人 token (appid:secret)"
             echo "  QQBOT_MARKDOWN        是否启用 markdown（yes/no）"
+            echo "  QQBOT_ENV             接入环境（test/production）"
             echo ""
             echo "不带参数时，将使用已有配置直接启动。"
             echo ""
@@ -72,6 +79,7 @@ done
 APPID="${APPID:-$QQBOT_APPID}"
 SECRET="${SECRET:-$QQBOT_SECRET}"
 MARKDOWN="${MARKDOWN:-$QQBOT_MARKDOWN}"
+QQBOT_ENV_ARG="${QQBOT_ENV_ARG:-$QQBOT_ENV}"
 
 echo "========================================="
 echo "  qqbot 一键更新启动脚本"
@@ -541,6 +549,54 @@ if [ -n "$MARKDOWN" ]; then
     fi
 else
     echo "未指定 markdown 选项，使用已有配置"
+fi
+
+# 5.5 配置接入环境（仅在明确指定时才配置）
+if [ -n "$QQBOT_ENV_ARG" ]; then
+    echo ""
+    echo "[5.5/6] 配置接入环境..."
+    if [ "$QQBOT_ENV_ARG" != "test" ] && [ "$QQBOT_ENV_ARG" != "production" ]; then
+        echo "⚠️  无效的 env 值: $QQBOT_ENV_ARG（仅支持 test 或 production），跳过"
+    else
+        OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+        CURRENT_ENV_VALUE=$(node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const home = process.env.HOME;
+          for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
+            const f = path.join(home, '.' + app, app + '.json');
+            if (!fs.existsSync(f)) continue;
+            try {
+              const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+              const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
+              for (const key of keys) {
+                const ch = cfg.channels && cfg.channels[key];
+                if (!ch) continue;
+                if (ch.env) { process.stdout.write(ch.env); process.exit(0); }
+              }
+            } catch {}
+          }
+        " 2>/dev/null || true)
+
+        if [ "$CURRENT_ENV_VALUE" = "$QQBOT_ENV_ARG" ]; then
+            echo "✅ 接入环境已是 $QQBOT_ENV_ARG，跳过写入"
+        elif [ -f "$OPENCLAW_CONFIG" ] && node -e "
+          const fs = require('fs');
+          const cfg = JSON.parse(fs.readFileSync('$OPENCLAW_CONFIG', 'utf8'));
+          if (!cfg.channels) cfg.channels = {};
+          if (!cfg.channels.qqbot) cfg.channels.qqbot = {};
+          cfg.channels.qqbot.env = '$QQBOT_ENV_ARG';
+          fs.writeFileSync('$OPENCLAW_CONFIG', JSON.stringify(cfg, null, 4) + '\n');
+        " 2>&1; then
+            echo "✅ 接入环境配置成功: env=$QQBOT_ENV_ARG"
+            if [ "$QQBOT_ENV_ARG" = "test" ]; then
+                echo "   将使用测试域名: https://test.api.bot.qq.com"
+            fi
+            _config_changed=1
+        else
+            echo "⚠️  接入环境配置写入失败"
+        fi
+    fi
 fi
 
 # 6. 启动 openclaw

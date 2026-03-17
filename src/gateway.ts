@@ -443,8 +443,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   // 初始化 API 配置（markdown 支持）
   initApiConfig({
     markdownSupport: account.markdownSupport,
+    env: account.env,
+    apiBase: account.apiBase,
+    tokenUrl: account.tokenUrl,
   });
-  log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}`);
+  log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}, env=${account.env ?? "production"}${account.apiBase ? `, apiBase=${account.apiBase}` : ""}${account.tokenUrl ? `, tokenUrl=${account.tokenUrl}` : ""}`);
 
   // 注册出站消息 refIdx 缓存钩子
   // 所有消息发送函数在拿到 QQ 回包后，如果含 ref_idx 则自动回调此处缓存

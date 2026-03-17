@@ -82,6 +82,9 @@ export function resolveQQBotAccount(
       systemPrompt: qqbot?.systemPrompt,
       imageServerBaseUrl: qqbot?.imageServerBaseUrl,
       markdownSupport: qqbot?.markdownSupport ?? true,
+      env: qqbot?.env,
+      apiBase: qqbot?.apiBase,
+      tokenUrl: qqbot?.tokenUrl,
     };
     appId = normalizeAppId(qqbot?.appId);
   } else {
@@ -118,6 +121,9 @@ export function resolveQQBotAccount(
     systemPrompt: accountConfig.systemPrompt,
     imageServerBaseUrl: accountConfig.imageServerBaseUrl || process.env.QQBOT_IMAGE_SERVER_BASE_URL,
     markdownSupport: accountConfig.markdownSupport !== false,
+    env: (accountConfig.env || process.env.QQBOT_ENV || "production") as "test" | "production",
+    apiBase: accountConfig.apiBase || process.env.QQBOT_API_BASE,
+    tokenUrl: accountConfig.tokenUrl || process.env.QQBOT_TOKEN_URL,
     config: accountConfig,
   };
 }

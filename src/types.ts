@@ -23,6 +23,12 @@ export interface ResolvedQQBotAccount {
   imageServerBaseUrl?: string;
   /** 是否支持 markdown 消息（默认 true） */
   markdownSupport: boolean;
+  /** 接入环境: "test" 使用沙箱域名，"production" 使用正式域名（默认 production） */
+  env?: "test" | "production";
+  /** 自定义 OpenAPI 域名（默认 https://api.sgroup.qq.com，测试环境可设为 https://test.api.bot.qq.com） */
+  apiBase?: string;
+  /** 自定义 Token 获取地址（默认 https://bots.qq.com/app/getAppAccessToken） */
+  tokenUrl?: string;
   config: QQBotAccountConfig;
 }
 
@@ -64,6 +70,22 @@ export interface QQBotAccountConfig {
    * 默认: https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg
    */
   upgradeUrl?: string;
+  /**
+   * 接入环境（默认 "production"）
+   * 设为 "test" 时自动使用沙箱域名 https://sandbox.api.sgroup.qq.com
+   * 也可通过环境变量 QQBOT_ENV=test 设置
+   */
+  env?: "test" | "production";
+  /**
+   * 自定义 OpenAPI 域名（默认 https://api.sgroup.qq.com）
+   * 优先级高于 env 字段；测试环境可设为 https://test.api.bot.qq.com
+   */
+  apiBase?: string;
+  /**
+   * 自定义 Token 获取地址（默认 https://bots.qq.com/app/getAppAccessToken）
+   * 优先级高于 env 字段
+   */
+  tokenUrl?: string;
 }
 
 /**
