@@ -50,12 +50,16 @@ interface QQBotChannelConfig extends QQBotAccountConfig {
 /** 默认群消息策略：接收所有群消息并回复 */
 const DEFAULT_GROUP_POLICY: GroupPolicy = "open";
 
+/** 群历史消息默认缓存条数（与 Discord 的 DEFAULT_HISTORY_LIMIT = 20 对齐） */
+const DEFAULT_GROUP_HISTORY_LIMIT = 50;
+
 /** 默认群配置 */
 const DEFAULT_GROUP_CONFIG: Required<GroupConfig> = {
   requireMention: false,
   toolPolicy: "restricted",
   name: "",
   prompts: undefined as unknown as GroupPrompts,
+  historyLimit: DEFAULT_GROUP_HISTORY_LIMIT,
 };
 
 /** 默认群消息行为 PE（硬编码 fallback，可通过配置文件覆盖） */
@@ -137,7 +141,16 @@ export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, acc
     toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
     name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
     prompts: specificCfg.prompts ?? wildcardCfg.prompts,
+    historyLimit: specificCfg.historyLimit ?? wildcardCfg.historyLimit ?? DEFAULT_GROUP_CONFIG.historyLimit,
   };
+}
+
+/**
+ * 解析指定群的历史消息缓存条数
+ * 非@消息写入内存历史 Map，下次被@时一次性注入上下文（与 Discord/WhatsApp 对齐）
+ */
+export function resolveHistoryLimit(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): number {
+  return Math.max(0, resolveGroupConfig(cfg, groupOpenid, accountId).historyLimit);
 }
 
 /**

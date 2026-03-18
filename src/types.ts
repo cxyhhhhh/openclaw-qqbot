@@ -73,6 +73,11 @@ export interface GroupConfig {
   name?: string;
   /** 群消息行为 PE，按场景区分（未配置时使用内置默认值） */
   prompts?: GroupPrompts;
+  /**
+   * 群历史消息缓存条数（非@消息记录到内存，下次被@时注入上下文）
+   * 设为 0 可禁用历史缓存。默认 20（与 Discord 对齐）。
+   */
+  historyLimit?: number;
 }
 
 /**

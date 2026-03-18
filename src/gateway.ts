@@ -6,8 +6,15 @@ import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, send
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers, listKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
-import { isGroupAllowed, resolveGroupName, resolveGroupPrompts } from "./config.js";
+import { isGroupAllowed, resolveGroupName, resolveGroupPrompts, resolveHistoryLimit } from "./config.js";
 import { qqbotPlugin } from "./channel.js";
+import {
+  recordPendingHistoryEntry,
+  buildPendingHistoryContext,
+  clearPendingHistory,
+  type HistoryEntry,
+} from "./group-history.js";
+
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type SlashCommandFileResult, type QueueSnapshot } from "./slash-commands.js";
 import { triggerUpdateCheck, onUpdateFound, formatUpdateNotice } from "./update-checker.js";
@@ -996,6 +1003,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
       const pluginRuntime = getQQBotRuntime();
 
+      // 群历史消息缓存（对齐 Discord 的 guildHistories）
+      // 非@消息写入此 Map，被@时一次性注入上下文后清空
+      const groupHistories = new Map<string, HistoryEntry[]>();
+
       // 处理收到的消息
       const handleMessage = async (event: {
         type: "c2c" | "guild" | "dm" | "group";
@@ -1412,8 +1423,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             content: event.content,
           }) ?? false;
 
-          // 3. requireMention 门控（委托 groups 适配器）
-          // 不区分发送者是机器人还是人类，统一按 requireMention 策略拦截
+          // 3. requireMention 门控
+          // 未被 @ 时：消息仍写入上下文（让 bot 拥有完整对话记忆），但不触发 AI 回复
           const requireMention = qqbotPlugin.groups?.resolveRequireMention?.({
             cfg: cfg as any,
             accountId: account.accountId,
@@ -1421,7 +1432,24 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }) ?? true;
 
           if (requireMention && !wasMentioned) {
-            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: requireMention=true but not mentioned (sender=${event.senderIsBot ? "bot" : "human"}), skipping`);
+            // 非@消息：记录到群历史缓存后直接返回，不调用 AI 模型（对齐 Discord/WhatsApp 方案）
+            // 下次被@时，累积的历史消息会通过 buildPendingHistoryContext 注入上下文
+            const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
+            const senderForHistory = event.senderName
+              ? `${event.senderName} (${event.senderId})`
+              : event.senderId;
+            recordPendingHistoryEntry({
+              historyMap: groupHistories,
+              historyKey: event.groupOpenid,
+              limit: historyLimit,
+              entry: {
+                sender: senderForHistory,
+                body: event.content,
+                timestamp: new Date(event.timestamp).getTime(),
+                messageId: event.messageId,
+              },
+            });
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: requireMention=true but not mentioned, recorded to history (limit=${historyLimit}, cached=${(groupHistories.get(event.groupOpenid) ?? []).length})`);
             return;
           }
 
@@ -1486,10 +1514,33 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           : "";
         // 命令直接透传，不注入上下文
         const userMessage = senderPrefix ? `${senderPrefix}${quotePart}${userContent}${isAtYouTag}` : `${quotePart}${userContent}`;
-        const agentBody = userContent.startsWith("/")
+        let agentBody = userContent.startsWith("/")
           ? userContent
           : `${systemPrompts.join("\n")}\n\n${dynamicCtx}${userMessage}`;
-        
+
+        // 被@时：将累积的非@历史消息注入上下文（对齐 Discord/WhatsApp 的 history 方案）
+        // 消息格式使用 formatInboundEnvelope 与正常消息保持一致
+        if (event.type === "group" && event.groupOpenid) {
+          const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
+          const envelopeOpts = pluginRuntime.channel.reply.resolveEnvelopeFormatOptions(cfg);
+          agentBody = buildPendingHistoryContext({
+            historyMap: groupHistories,
+            historyKey: event.groupOpenid,
+            limit: historyLimit,
+            currentMessage: agentBody,
+            formatEntry: (entry) =>
+              pluginRuntime.channel.reply.formatInboundEnvelope({
+                channel: "qqbot",
+                from: entry.sender,
+                timestamp: entry.timestamp,
+                body: entry.body,
+                chatType: "group",
+                senderLabel: entry.sender,
+                envelope: envelopeOpts,
+              }),
+          });
+        }
+
         log?.info(`[qqbot:${account.accountId}] agentBody length: ${agentBody.length}`);
 
         const fromAddress = event.type === "guild" ? `qqbot:channel:${event.channelId}`
@@ -2661,6 +2712,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               toolFallbackSent = true;
               log?.error(`[qqbot:${account.accountId}] Dispatch completed with ${toolDeliverCount} tool deliver(s) but no block deliver, sending fallback`);
               await sendToolFallback();
+            }
+            // 回复完成后清空群历史缓存（对齐 Discord：每次回复后重新累积）
+            if (event.type === "group" && event.groupOpenid) {
+              const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
+              clearPendingHistory({
+                historyMap: groupHistories,
+                historyKey: event.groupOpenid,
+                limit: historyLimit,
+              });
             }
           }
         } catch (err) {

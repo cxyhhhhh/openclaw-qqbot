@@ -89,6 +89,7 @@ echo "========================================="
 echo ""
 echo "[1/6] 备份已有配置..."
 SAVED_QQBOT_TOKEN=""
+SAVED_QQBOT_CONFIG_FILE=""  # 记录哪个配置文件有 qqbot 配置（用于后续恢复）
 for APP_NAME in openclaw clawdbot moltbot; do
     CONFIG_FILE="$HOME/.$APP_NAME/$APP_NAME.json"
     if [ -f "$CONFIG_FILE" ]; then
@@ -104,11 +105,28 @@ for APP_NAME in openclaw clawdbot moltbot; do
             }
         " 2>/dev/null || true)
         if [ -n "$SAVED_QQBOT_TOKEN" ]; then
+            SAVED_QQBOT_CONFIG_FILE="$CONFIG_FILE"
             echo "已备份 qqbot 通道 token: ${SAVED_QQBOT_TOKEN:0:10}..."
             break
         fi
     fi
 done
+
+# 备份完整的 channels.qqbot 对象（保留 groups / env / allowFrom 等自定义配置）
+SAVED_QQBOT_CHANNEL_JSON=""
+if [ -n "$SAVED_QQBOT_CONFIG_FILE" ]; then
+    SAVED_QQBOT_CHANNEL_JSON=$(node -e "
+        const cfg = JSON.parse(require('fs').readFileSync('$SAVED_QQBOT_CONFIG_FILE', 'utf8'));
+        const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
+        for (const key of keys) {
+            const ch = cfg.channels && cfg.channels[key];
+            if (ch) { process.stdout.write(JSON.stringify(ch)); process.exit(0); }
+        }
+    " 2>/dev/null || true)
+    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+        echo "已备份完整 qqbot 通道配置（含 groups / env / allowFrom 等）"
+    fi
+fi
 
 # 若当前配置中没有，再尝试从 openclaw 备份文件恢复
 if [ -z "$SAVED_QQBOT_TOKEN" ] && [ -d "$HOME/.openclaw" ]; then
@@ -298,8 +316,8 @@ else
         if [ "$_plugin_dir_ok" -eq 0 ]; then
             echo "  ❌ 重试安装仍失败，插件目录不存在"
             echo "  请手动排查: ls -la ~/.openclaw/extensions/"
-            # 清理无效的配置条目，防止 gateway 启动时报错
-            echo "  清理无效的配置条目..."
+            # 禁用 qqbot 通道（保留配置内容，防止 groups 等自定义配置丢失）
+            echo "  禁用 qqbot 通道（保留 groups 等自定义配置，下次安装成功后自动恢复）..."
             node -e "
               const fs = require('fs');
               const path = require('path');
@@ -308,18 +326,22 @@ else
                 if (!fs.existsSync(f)) continue;
                 const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
                 let changed = false;
-                // 移除 channels.qqbot（插件未加载时此配置会导致 unknown channel id 错误）
-                if (cfg.channels && cfg.channels.qqbot) { delete cfg.channels.qqbot; changed = true; }
+                // 仅禁用 qqbot 通道，不删除配置（保留 groups / env / allowFrom 等）
+                if (cfg.channels && cfg.channels.qqbot && cfg.channels.qqbot.enabled !== false) {
+                  cfg.channels.qqbot.enabled = false;
+                  changed = true;
+                }
                 // 清理 plugins.allow 中的 openclaw-qqbot
                 if (cfg.plugins && Array.isArray(cfg.plugins.allow)) {
+                  const before = cfg.plugins.allow.length;
                   cfg.plugins.allow = cfg.plugins.allow.filter(x => x !== 'openclaw-qqbot');
-                  changed = true;
+                  if (cfg.plugins.allow.length !== before) changed = true;
                 }
                 if (changed) fs.writeFileSync(f, JSON.stringify(cfg, null, 4) + '\n');
                 break;
               }
             " 2>/dev/null || true
-            echo "  已清理无效配置，gateway 可正常启动（无 qqbot 插件状态）"
+            echo "  已禁用 qqbot 通道，gateway 可正常启动（自定义配置已保留）"
             read -t 10 -p "是否继续? (y/N): " _cont || _cont="N"
             case "$_cont" in
                 [Yy]* ) echo "继续..." ;;
@@ -395,6 +417,47 @@ else
     # gateway 已在安装前 stop，此时不会有自动 restart 的问题
     # 所有配置写入完成后，在 Step 6 统一启动
 
+    # 恢复 channels.qqbot 自定义配置（防止 plugins install 意外覆盖）
+    # 策略：以备份对象为基准，合并安装后可能新增的字段，然后整体写回。
+    # 这确保 groups / env / prompts 等用户手动配置不会丢失，
+    # 同时保留 plugins install 新版本可能引入的新字段。
+    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+        node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const saved = JSON.parse(process.argv[1]);
+          for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
+            const f = path.join(process.env.HOME, '.' + app, app + '.json');
+            if (!fs.existsSync(f)) continue;
+            const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+            if (!cfg.channels) { cfg.channels = {}; }
+            const current = cfg.channels.qqbot || {};
+            // 以备份对象为基准，合并安装后新增的字段（备份中没有、安装后有的字段保留）
+            const merged = { ...current, ...saved };
+            // 检查是否有变化
+            if (JSON.stringify(cfg.channels.qqbot) === JSON.stringify(merged)) {
+              process.stderr.write('  channels.qqbot 配置无变化，无需恢复\\n');
+            } else {
+              // 列出恢复了哪些字段
+              const restoredKeys = [];
+              for (const key of Object.keys(saved)) {
+                if (JSON.stringify(current[key]) !== JSON.stringify(saved[key])) {
+                  restoredKeys.push(key);
+                }
+              }
+              cfg.channels.qqbot = merged;
+              fs.writeFileSync(f, JSON.stringify(cfg, null, 4) + '\\n');
+              if (restoredKeys.length > 0) {
+                process.stderr.write('  已恢复 channels.qqbot 自定义配置: ' + restoredKeys.join(', ') + '\\n');
+              } else {
+                process.stderr.write('  已合并 channels.qqbot 配置（新增字段保留）\\n');
+              }
+            }
+            break;
+          }
+        " "$SAVED_QQBOT_CHANNEL_JSON" 2>&1 || true
+    fi
+
     # 记录更新后的 qqbot 插件版本
     NEW_QQBOT_VERSION=$(node -e '
         try {
@@ -454,15 +517,40 @@ if [ -n "$DESIRED_QQBOT_TOKEN" ]; then
     if [ "$CURRENT_QQBOT_TOKEN" = "$DESIRED_QQBOT_TOKEN" ]; then
         echo "✅ 当前配置已是目标值，跳过写入（避免配置覆盖提示）"
         _config_changed=0
-    elif ! openclaw channels add --channel qqbot --token "$DESIRED_QQBOT_TOKEN" 2>&1; then
-        echo "⚠️  警告: 机器人通道配置失败，继续使用已有配置"
-        _config_changed=0
     else
-        echo "✅ 机器人通道配置成功"
-        _config_changed=1
-        # channels 配置变更在 reload plan 中匹配为 hot reload（非 restart），
-        # 由 channel 插件热重载处理，通常 <1 秒完成，无需长时间等待。
-        sleep 1
+        # 使用 merge 方式写入 token，保留已有的 groups / env / allowFrom 等自定义配置
+        # 注意：不使用 `openclaw channels add`，因为它会覆盖整个 channels.qqbot 对象
+        _desired_appid="${DESIRED_QQBOT_TOKEN%%:*}"
+        _desired_secret="${DESIRED_QQBOT_TOKEN#*:}"
+        OPENCLAW_CONFIG=""
+        for _app in openclaw clawdbot moltbot; do
+            _cfg_path="$HOME/.$_app/$_app.json"
+            if [ -f "$_cfg_path" ]; then
+                OPENCLAW_CONFIG="$_cfg_path"
+                break
+            fi
+        done
+
+        if [ -n "$OPENCLAW_CONFIG" ] && node -e "
+          const fs = require('fs');
+          const cfg = JSON.parse(fs.readFileSync('$OPENCLAW_CONFIG', 'utf8'));
+          if (!cfg.channels) cfg.channels = {};
+          if (!cfg.channels.qqbot) cfg.channels.qqbot = {};
+          // 只更新 token 相关字段，保留 groups / env / allowFrom 等已有配置
+          cfg.channels.qqbot.enabled = true;
+          cfg.channels.qqbot.appId = '$_desired_appid';
+          cfg.channels.qqbot.clientSecret = '$_desired_secret';
+          // 清理旧格式 token 字段（如果存在）
+          delete cfg.channels.qqbot.token;
+          fs.writeFileSync('$OPENCLAW_CONFIG', JSON.stringify(cfg, null, 4) + '\n');
+        " 2>&1; then
+            echo "✅ 机器人通道配置成功（merge 模式，已保留 groups 等自定义配置）"
+            _config_changed=1
+            sleep 1
+        else
+            echo "⚠️  警告: 机器人通道配置失败，继续使用已有配置"
+            _config_changed=0
+        fi
     fi
 else
     # 未提供任何可用 token 时，检查是否已有可用配置
