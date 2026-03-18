@@ -6,7 +6,7 @@ import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, send
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers, listKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
-import { isGroupAllowed, resolveGroupName } from "./config.js";
+import { isGroupAllowed, resolveGroupName, resolveGroupPrompts } from "./config.js";
 import { qqbotPlugin } from "./channel.js";
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type SlashCommandFileResult, type QueueSnapshot } from "./slash-commands.js";
@@ -1443,30 +1443,18 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
           let behaviorPrompt = "";
 
+          // 从配置文件读取行为 PE（支持热更新，无需重新编译）
+          const groupPrompts = resolveGroupPrompts(cfg as any, event.groupOpenid, account.accountId);
+
           if (event.senderIsBot) {
             // ── 机器人消息 PE ──
-            behaviorPrompt = [
-              "【机器人消息prompt】",
-              "这是群消息，发送者是另一个机器人。仅当对方明确向你提问或请求你协助具体任务时，简洁回复；",
-              "闲聊、打招呼、附和、讨论计划等不需要你参与的内容，",
-              "只回复\"[SKIP]\"，不要输出任何其他文字。避免与机器人进行多轮对话。",
-            ].join("");
+            behaviorPrompt = groupPrompts.botMessage;
           } else if (wasMentioned) {
             // ── 人类 @你 的消息 PE ──
-            behaviorPrompt = [
-              "【被用户at】",
-              "这是群消息，用户@了你，请正常回复。不要重复和扩散话题，请聚焦上下文。",
-              "如果结合上下文判断不需要回复，则只回复\"[SKIP]\"，不要输出任何其他文字。",
-            ].join("");
+            behaviorPrompt = groupPrompts.mentioned;
           } else {
             // ── 人类普通群消息（未 @）PE ──
-            behaviorPrompt = [
-              "【未被用户at】",
-              "这是群消息，用户没有@你。不要重复和扩散话题，请聚焦上下文。",
-              "请结合聊天上下文和消息相关度判断是否回复：",
-              "如果消息与你相关、或上下文中你正在参与对话，则回复；",
-              "否则只回复\"[SKIP]\"，不要输出任何其他文字。",
-            ].join("");
+            behaviorPrompt = groupPrompts.unmentioned;
           }
 
           groupSystemPrompt = [baseHint, behaviorPrompt].filter(Boolean).join("\n");

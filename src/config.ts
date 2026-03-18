@@ -1,4 +1,4 @@
-import type { ResolvedQQBotAccount, QQBotAccountConfig, ToolPolicy, GroupConfig } from "./types.js";
+import type { ResolvedQQBotAccount, QQBotAccountConfig, ToolPolicy, GroupConfig, GroupPrompts } from "./types.js";
 import type { OpenClawConfig, GroupPolicy } from "openclaw/plugin-sdk";
 
 export const DEFAULT_ACCOUNT_ID = "default";
@@ -55,6 +55,29 @@ const DEFAULT_GROUP_CONFIG: Required<GroupConfig> = {
   requireMention: false,
   toolPolicy: "restricted",
   name: "",
+  prompts: undefined as unknown as GroupPrompts,
+};
+
+/** 默认群消息行为 PE（硬编码 fallback，可通过配置文件覆盖） */
+const DEFAULT_GROUP_PROMPTS: Required<GroupPrompts> = {
+  botMessage: [
+    "【机器人消息prompt】",
+    "这是群消息，发送者是另一个机器人。仅当对方明确向你提问或请求你协助具体任务时，简洁回复；",
+    "闲聊、打招呼、附和、讨论计划等不需要你参与的内容，",
+    "只回复\"[SKIP]\"，不要输出任何其他文字。避免与机器人进行多轮对话。",
+  ].join(""),
+  mentioned: [
+    "【被用户at】",
+    "这是群消息，用户@了你，请正常回复。不要重复和扩散话题，请聚焦上下文。",
+    "如果结合上下文判断不需要回复，则只回复\"[SKIP]\"，不要输出任何其他文字。",
+  ].join(""),
+  unmentioned: [
+    "【未被用户at】",
+    "这是群消息，用户没有@你。不要重复和扩散话题，请聚焦上下文。",
+    "请结合聊天上下文和消息相关度判断是否回复：",
+    "如果消息与你相关、或上下文中你正在参与对话，则回复；",
+    "否则只回复\"[SKIP]\"，不要输出任何其他文字。",
+  ].join(""),
 };
 
 /**
@@ -98,9 +121,14 @@ export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, account
 }
 
 /**
+ * resolveGroupConfig 的返回类型（prompts 保持可选，由 resolveGroupPrompts 独立解析）
+ */
+type ResolvedGroupConfig = Omit<Required<GroupConfig>, "prompts"> & Pick<GroupConfig, "prompts">;
+
+/**
  * 解析指定群的配置（按优先级合并：具体 groupOpenid > 通配符 "*" > 默认值）
  */
-export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): Required<GroupConfig> {
+export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ResolvedGroupConfig {
   const account = resolveQQBotAccount(cfg, accountId);
   const groups = account.config?.groups ?? {};
 
@@ -111,6 +139,27 @@ export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, acc
     requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? DEFAULT_GROUP_CONFIG.requireMention,
     toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
     name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
+    prompts: specificCfg.prompts ?? wildcardCfg.prompts,
+  };
+}
+
+/**
+ * 解析指定群的行为 PE（按优先级合并：具体群 > 通配符 "*" > 默认内置值）
+ *
+ * 每个场景的 prompt 独立解析，支持部分覆盖：
+ * 例如只配置 botMessage，其余字段自动 fallback 到默认值。
+ */
+export function resolveGroupPrompts(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): Required<GroupPrompts> {
+  const account = resolveQQBotAccount(cfg, accountId);
+  const groups = account.config?.groups ?? {};
+
+  const wildcardPrompts = groups["*"]?.prompts ?? {};
+  const specificPrompts = groups[groupOpenid]?.prompts ?? {};
+
+  return {
+    botMessage: specificPrompts.botMessage ?? wildcardPrompts.botMessage ?? DEFAULT_GROUP_PROMPTS.botMessage,
+    mentioned: specificPrompts.mentioned ?? wildcardPrompts.mentioned ?? DEFAULT_GROUP_PROMPTS.mentioned,
+    unmentioned: specificPrompts.unmentioned ?? wildcardPrompts.unmentioned ?? DEFAULT_GROUP_PROMPTS.unmentioned,
   };
 }
 

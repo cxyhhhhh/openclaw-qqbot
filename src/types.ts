@@ -49,6 +49,19 @@ export type GroupPolicy = "open" | "allowlist" | "disabled";
 export type ToolPolicy = "full" | "restricted" | "none";
 
 /**
+ * 群消息行为 PE（Prompt Engineering）配置
+ * 三种场景的系统提示词，支持通过配置文件热更新，无需重新编译
+ */
+export interface GroupPrompts {
+  /** 发送者是机器人时的 PE */
+  botMessage?: string;
+  /** 用户 @了机器人时的 PE */
+  mentioned?: string;
+  /** 用户未 @机器人时的 PE */
+  unmentioned?: string;
+}
+
+/**
  * 单个群的配置
  */
 export interface GroupConfig {
@@ -58,6 +71,8 @@ export interface GroupConfig {
   toolPolicy?: ToolPolicy;
   /** 群名称（QQ Bot 无 API 获取群名，需手动配置或自动累积） */
   name?: string;
+  /** 群消息行为 PE，按场景区分（未配置时使用内置默认值） */
+  prompts?: GroupPrompts;
 }
 
 /**
