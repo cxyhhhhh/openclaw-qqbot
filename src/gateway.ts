@@ -1413,14 +1413,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }) ?? false;
 
           // 3. requireMention 门控（委托 groups 适配器）
+          // 不区分发送者是机器人还是人类，统一按 requireMention 策略拦截
           const requireMention = qqbotPlugin.groups?.resolveRequireMention?.({
             cfg: cfg as any,
             accountId: account.accountId,
             groupId: event.groupOpenid,
           }) ?? true;
 
-          if (requireMention && !wasMentioned && !event.senderIsBot) {
-            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: requireMention=true but not mentioned, skipping`);
+          if (requireMention && !wasMentioned) {
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: requireMention=true but not mentioned (sender=${event.senderIsBot ? "bot" : "human"}), skipping`);
             return;
           }
 
