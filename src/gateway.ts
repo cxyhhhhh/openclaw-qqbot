@@ -2,10 +2,12 @@ import WebSocket from "ws";
 import path from "node:path";
 import * as fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveC2CMessage } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveC2CMessage, sendProactiveGroupMessage } from "./api.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers, listKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
+import { isGroupAllowed, resolveGroupName } from "./config.js";
+import { qqbotPlugin } from "./channel.js";
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type SlashCommandFileResult, type QueueSnapshot } from "./slash-commands.js";
 import { triggerUpdateCheck, onUpdateFound, formatUpdateNotice } from "./update-checker.js";
@@ -1390,31 +1392,96 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
         const dynamicCtx = dynLines.length > 0 ? dynLines.join("\n") + "\n" : "";
 
-        // --- 群消息上下文提示（帮助模型判断是否需要回复） ---
-        let groupMsgHint = "";
-        if (event.type === "group") {
-          const scene = event.messageScene?.source ?? "unknown";
-          if (event.senderIsBot) {
-            // 发送者是机器人，严格限制回复以避免机器人之间互相聊天
-            groupMsgHint = `这是群消息，发送者是另一个机器人。仅当对方明确向你提问或请求你协助具体任务时，简洁回复；闲聊、打招呼、附和、讨论计划等不需要你参与的内容，只回复"[SKIP]"，不要输出任何其他文字。避免与机器人进行多轮对话。`;
-          } else {
-            const isAtYou = event.eventType === "GROUP_AT_MESSAGE_CREATE" || (event.mentions?.some(m => m.is_you) ?? false);
-            if (isAtYou) {
-              groupMsgHint = `这是群消息，用户@了你，请正常回复。不要重复和扩散话题，请聚焦上下文。如果结合上下文判断不需要回复，则只回复"[SKIP]"，不要输出任何其他文字。`;
-            } else {
-              groupMsgHint = `这是群消息，用户没有@你。不要重复和扩散话题，请聚焦上下文。请结合聊天上下文和消息相关度判断是否回复：如果消息与你相关、或上下文中你正在参与对话，则回复；否则只回复"[SKIP]"，不要输出任何其他文字。`;
-            }
+        // --- 群消息上下文（对齐 Discord 标准路径：插件只提供策略，框架自动组装 hint） ---
+        let groupSystemPrompt = "";
+        let wasMentioned = false;
+        let groupSubject = "";
+        let senderLabel = "";
+
+        if (event.type === "group" && event.groupOpenid) {
+          // 1. 群策略检查（直接用 config 工具函数，与 Discord 的 allow-list.ts 同理）
+          if (!isGroupAllowed(cfg as any, event.groupOpenid, account.accountId)) {
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid} not allowed by groupPolicy, skipping`);
+            return;
           }
+
+          // 2. @检测（委托 mentions 适配器）
+          wasMentioned = qqbotPlugin.mentions?.detectWasMentioned?.({
+            eventType: event.eventType,
+            mentions: event.mentions,
+            content: event.content,
+          }) ?? false;
+
+          // 3. requireMention 门控（委托 groups 适配器）
+          const requireMention = qqbotPlugin.groups?.resolveRequireMention?.({
+            cfg: cfg as any,
+            accountId: account.accountId,
+            groupId: event.groupOpenid,
+          }) ?? true;
+
+          if (requireMention && !wasMentioned && !event.senderIsBot) {
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: requireMention=true but not mentioned, skipping`);
+            return;
+          }
+
+          // 4. 发送者标签
+          senderLabel = event.senderName
+            ? `${event.senderName} (${event.senderId})`
+            : event.senderId;
+
+          // 5. 群名称（从 config 中读取，fallback 为 openid 前 8 位）
+          groupSubject = resolveGroupName(cfg as any, event.groupOpenid, account.accountId);
+
+          // 6. GroupSystemPrompt — 根据消息来源（机器人/人类）和 @状态 注入差异化 PE
+          //    基础提示从 resolveGroupIntroHint 获取（群名称、平台限制等静态信息），
+          //    然后根据运行时状态追加针对性行为指引。
+          const baseHint = qqbotPlugin.groups?.resolveGroupIntroHint?.({
+            cfg: cfg as any,
+            accountId: account.accountId,
+            groupId: event.groupOpenid,
+          }) ?? "";
+
+          let behaviorPrompt = "";
+
+          if (event.senderIsBot) {
+            // ── 机器人消息 PE ──
+            behaviorPrompt = [
+              "【机器人消息prompt】",
+              "这是群消息，发送者是另一个机器人。仅当对方明确向你提问或请求你协助具体任务时，简洁回复；",
+              "闲聊、打招呼、附和、讨论计划等不需要你参与的内容，",
+              "只回复\"[SKIP]\"，不要输出任何其他文字。避免与机器人进行多轮对话。",
+            ].join("");
+          } else if (wasMentioned) {
+            // ── 人类 @你 的消息 PE ──
+            behaviorPrompt = [
+              "【被用户at】",
+              "这是群消息，用户@了你，请正常回复。不要重复和扩散话题，请聚焦上下文。",
+              "如果结合上下文判断不需要回复，则只回复\"[SKIP]\"，不要输出任何其他文字。",
+            ].join("");
+          } else {
+            // ── 人类普通群消息（未 @）PE ──
+            behaviorPrompt = [
+              "【未被用户at】",
+              "这是群消息，用户没有@你。不要重复和扩散话题，请聚焦上下文。",
+              "请结合聊天上下文和消息相关度判断是否回复：",
+              "如果消息与你相关、或上下文中你正在参与对话，则回复；",
+              "否则只回复\"[SKIP]\"，不要输出任何其他文字。",
+            ].join("");
+          }
+
+          groupSystemPrompt = [baseHint, behaviorPrompt].filter(Boolean).join("\n");
         }
 
         // 合并消息额外提示：告知模型这是多条排队消息的合并
         const mergedCount = (event as QueuedMessage)._mergedCount;
         if (mergedCount && mergedCount > 1) {
-          groupMsgHint += `\n注意：以下内容是群里${mergedCount}条排队消息的合并，请一次性针对所有相关内容统一回复，不需要逐条回复。`;
+          groupSystemPrompt += `\n注意：以下内容是群里${mergedCount}条排队消息的合并，请一次性针对所有相关内容统一回复，不需要逐条回复。`;
         }
 
-        // 将 <@member_openid> 替换为 @username
-        if (event.mentions?.length) {
+        // 将 <@member_openid> 替换为 @username（使用 mentions 适配器）
+        if (event.type === "group" && event.mentions?.length) {
+          userContent = qqbotPlugin.mentions?.stripMentionText?.(userContent, event.mentions as any) ?? userContent;
+        } else if (event.mentions?.length) {
           for (const m of event.mentions) {
             if (m.member_openid && m.username) {
               userContent = userContent.replace(new RegExp(`<@${m.member_openid}>`, "g"), `@${m.username}`);
@@ -1426,7 +1493,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const isMergedMsg = mergedCount && mergedCount > 1;
         const senderPrefix = (event.type === "group" && !isMergedMsg) ? `[${event.senderName ?? event.senderId}]: ` : "";
         const isAtYouTag = event.type === "group"
-          ? (event.eventType === "GROUP_AT_MESSAGE_CREATE" || (event.mentions?.some(m => m.is_you) ?? false) ? " (@你)" : "")
+          ? (wasMentioned ? " (@你)" : "")
           : "";
         // 命令直接透传，不注入上下文
         const userMessage = senderPrefix ? `${senderPrefix}${quotePart}${userContent}${isAtYouTag}` : `${quotePart}${userContent}`;
@@ -1476,7 +1543,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           SessionKey: route.sessionKey,
           AccountId: route.accountId,
           ChatType: isGroupChat ? "group" : "direct",
-          GroupSystemPrompt: groupMsgHint || undefined,
+          GroupSystemPrompt: groupSystemPrompt || undefined,
+          // 群消息元数据（框架级字段）
+          WasMentioned: isGroupChat ? wasMentioned : undefined,
+          SenderLabel: isGroupChat ? senderLabel : undefined,
+          GroupSubject: isGroupChat ? groupSubject : undefined,
           SenderId: event.senderId,
           SenderName: event.senderName,
           Provider: "qqbot",

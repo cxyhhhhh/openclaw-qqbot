@@ -33,6 +33,34 @@ export interface ResolvedQQBotAccount {
 }
 
 /**
+ * 群消息策略类型
+ * - open: 所有群消息都响应
+ * - allowlist: 仅白名单群响应（默认推荐）
+ * - disabled: 不响应任何群消息
+ */
+export type GroupPolicy = "open" | "allowlist" | "disabled";
+
+/**
+ * 工具策略类型
+ * - full: 允许使用所有工具
+ * - restricted: 限制敏感工具（群聊推荐）
+ * - none: 禁止使用任何工具
+ */
+export type ToolPolicy = "full" | "restricted" | "none";
+
+/**
+ * 单个群的配置
+ */
+export interface GroupConfig {
+  /** 是否需要 @机器人才响应（默认 true） */
+  requireMention?: boolean;
+  /** 群聊中 AI 可使用的工具范围（默认 restricted） */
+  toolPolicy?: ToolPolicy;
+  /** 群名称（QQ Bot 无 API 获取群名，需手动配置或自动累积） */
+  name?: string;
+}
+
+/**
  * QQ Bot 账户配置
  */
 export interface QQBotAccountConfig {
@@ -43,6 +71,15 @@ export interface QQBotAccountConfig {
   clientSecretFile?: string;
   dmPolicy?: "open" | "pairing" | "allowlist";
   allowFrom?: string[];
+  /** 群消息策略（默认 allowlist） */
+  groupPolicy?: GroupPolicy;
+  /** 群白名单（groupPolicy 为 allowlist 时生效） */
+  groupAllowFrom?: string[];
+  /**
+   * 群配置映射（按 groupOpenid 索引，支持通配符 "*" 作为默认）
+   * 示例: { "*": { requireMention: true }, "GROUP_OPENID_VIP": { requireMention: false } }
+   */
+  groups?: Record<string, GroupConfig>;
   /** 系统提示词，会添加在用户消息前面 */
   systemPrompt?: string;
   /** 图床服务器公网地址，用于发送图片，例如 http://your-ip:18765 */

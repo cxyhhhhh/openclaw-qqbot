@@ -1,10 +1,146 @@
-import type { ResolvedQQBotAccount, QQBotAccountConfig } from "./types.js";
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import type { ResolvedQQBotAccount, QQBotAccountConfig, ToolPolicy, GroupConfig } from "./types.js";
+import type { OpenClawConfig, GroupPolicy } from "openclaw/plugin-sdk";
 
 export const DEFAULT_ACCOUNT_ID = "default";
 
+// ------------------------------------------------------------
+// 内联 evaluateMatchedGroupAccessForPolicy
+// 源自 openclaw/src/plugin-sdk/group-access.ts
+// 当前 openclaw dist 尚未包含此导出，本地实现避免运行时报错
+// ------------------------------------------------------------
+
+type MatchedGroupAccessReason = "allowed" | "disabled" | "missing_match_input" | "empty_allowlist" | "not_allowlisted";
+
+interface MatchedGroupAccessDecision {
+  allowed: boolean;
+  groupPolicy: GroupPolicy;
+  reason: MatchedGroupAccessReason;
+}
+
+function evaluateMatchedGroupAccessForPolicy(params: {
+  groupPolicy: GroupPolicy;
+  allowlistConfigured: boolean;
+  allowlistMatched: boolean;
+  requireMatchInput?: boolean;
+  hasMatchInput?: boolean;
+}): MatchedGroupAccessDecision {
+  if (params.groupPolicy === "disabled") {
+    return { allowed: false, groupPolicy: params.groupPolicy, reason: "disabled" };
+  }
+  if (params.groupPolicy === "allowlist") {
+    if (params.requireMatchInput && !params.hasMatchInput) {
+      return { allowed: false, groupPolicy: params.groupPolicy, reason: "missing_match_input" };
+    }
+    if (!params.allowlistConfigured) {
+      return { allowed: false, groupPolicy: params.groupPolicy, reason: "empty_allowlist" };
+    }
+    if (!params.allowlistMatched) {
+      return { allowed: false, groupPolicy: params.groupPolicy, reason: "not_allowlisted" };
+    }
+  }
+  return { allowed: true, groupPolicy: params.groupPolicy, reason: "allowed" };
+}
+
 interface QQBotChannelConfig extends QQBotAccountConfig {
   accounts?: Record<string, QQBotAccountConfig>;
+}
+
+// ============ 群消息策略解析 ============
+
+/** 默认群消息策略：接收所有群消息并回复 */
+const DEFAULT_GROUP_POLICY: GroupPolicy = "open";
+
+/** 默认群配置 */
+const DEFAULT_GROUP_CONFIG: Required<GroupConfig> = {
+  requireMention: false,
+  toolPolicy: "restricted",
+  name: "",
+};
+
+/**
+ * 解析群消息策略
+ */
+export function resolveGroupPolicy(cfg: OpenClawConfig, accountId?: string): GroupPolicy {
+  const account = resolveQQBotAccount(cfg, accountId);
+  return account.config?.groupPolicy ?? DEFAULT_GROUP_POLICY;
+}
+
+/**
+ * 解析群白名单
+ */
+export function resolveGroupAllowFrom(cfg: OpenClawConfig, accountId?: string): string[] {
+  const account = resolveQQBotAccount(cfg, accountId);
+  return (account.config?.groupAllowFrom ?? []).map((id) => String(id).trim().toUpperCase());
+}
+
+/**
+ * 检查指定群是否被允许（根据 groupPolicy + groupAllowFrom）
+ *
+ * 使用核心框架的 evaluateMatchedGroupAccessForPolicy 标准策略引擎，
+ * 与 Telegram、Line、Nextcloud Talk 等渠道保持一致。
+ *
+ * 策略逻辑：
+ * - "open": 允许所有群
+ * - "disabled": 拒绝所有群
+ * - "allowlist": 仅允许 groupAllowFrom 中配置的群（支持通配符 "*"）
+ */
+export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
+  const policy = resolveGroupPolicy(cfg, accountId);
+  const allowList = resolveGroupAllowFrom(cfg, accountId);
+  const allowlistConfigured = allowList.length > 0;
+  const allowlistMatched = allowList.some((id) => id === "*" || id === groupOpenid.toUpperCase());
+
+  return evaluateMatchedGroupAccessForPolicy({
+    groupPolicy: policy,
+    allowlistConfigured,
+    allowlistMatched,
+  }).allowed;
+}
+
+/**
+ * 解析指定群的配置（按优先级合并：具体 groupOpenid > 通配符 "*" > 默认值）
+ */
+export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): Required<GroupConfig> {
+  const account = resolveQQBotAccount(cfg, accountId);
+  const groups = account.config?.groups ?? {};
+
+  const wildcardCfg = groups["*"] ?? {};
+  const specificCfg = groups[groupOpenid] ?? {};
+
+  return {
+    requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? DEFAULT_GROUP_CONFIG.requireMention,
+    toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
+    name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
+  };
+}
+
+/**
+ * 解析指定群是否需要 @机器人才响应
+ */
+export function resolveRequireMention(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
+  return resolveGroupConfig(cfg, groupOpenid, accountId).requireMention;
+}
+
+/**
+ * 解析指定群的工具策略
+ */
+export function resolveToolPolicy(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ToolPolicy {
+  return resolveGroupConfig(cfg, groupOpenid, accountId).toolPolicy;
+}
+
+/**
+ * 解析群名称（传输层关注点）
+ *
+ * 与 Discord 取 displayChannelSlug → "#channel-name" 同理，
+ * 此函数负责将 QQ 群 openid 映射为人类可读的群名称。
+ * 优先从 groups config 中读取手动配置的名称，fallback 为 openid 前 8 位。
+ *
+ * 此函数由 gateway.ts 直接调用填充 GroupSubject 字段，
+ * 而非通过 ChannelGroupAdapter 接口（框架不定义群名称解析标准方法）。
+ */
+export function resolveGroupName(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): string {
+  const name = resolveGroupConfig(cfg, groupOpenid, accountId).name;
+  return name || groupOpenid.slice(0, 8);
 }
 
 function normalizeAppId(raw: unknown): string {
@@ -79,6 +215,9 @@ export function resolveQQBotAccount(
       clientSecretFile: qqbot?.clientSecretFile,
       dmPolicy: qqbot?.dmPolicy,
       allowFrom: qqbot?.allowFrom,
+      groupPolicy: qqbot?.groupPolicy,
+      groupAllowFrom: qqbot?.groupAllowFrom,
+      groups: qqbot?.groups,
       systemPrompt: qqbot?.systemPrompt,
       imageServerBaseUrl: qqbot?.imageServerBaseUrl,
       markdownSupport: qqbot?.markdownSupport ?? true,

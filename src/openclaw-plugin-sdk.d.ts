@@ -323,6 +323,59 @@ declare module "openclaw/plugin-sdk" {
     [key: string]: unknown;
   }
 
+  // ============ 群消息适配器 ============
+
+  /**
+   * 群消息策略适配器
+   * 告诉框架当前群聊的策略配置
+   */
+  /**
+   * 群消息策略适配器（对齐核心框架 ChannelGroupAdapter 标准 3 方法）
+   * - resolveRequireMention: 是否需要 @才响应
+   * - resolveToolPolicy: 群聊中 AI 工具使用范围
+   * - resolveGroupIntroHint: 平台特有的群聊行为提示（框架 buildGroupIntro 会自动调用）
+   */
+  export interface ChannelGroupAdapter {
+    /**
+     * 解析指定群是否需要 @机器人才响应
+     */
+    resolveRequireMention?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string }) => boolean;
+    /**
+     * 解析指定群中 AI 可使用的工具范围
+     */
+    resolveToolPolicy?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string; senderId?: string }) => "full" | "restricted" | "none";
+    /**
+     * 返回平台特有的群聊行为提示（如 QQ Bot 被动回复限制提醒、bot 互聊防护等）
+     * 框架的 buildGroupIntro 会自动调用此方法并与通用 hint 合并
+     */
+    resolveGroupIntroHint?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string }) => string | undefined;
+    /** 其他适配器方法 */
+    [key: string]: unknown;
+  }
+
+  /**
+   * @mention 检测与清理适配器
+   * 告诉框架如何检测和清理 @mention 文本
+   */
+  export interface ChannelMentionAdapter {
+    /**
+     * 清理 @mention 文本，将平台格式转换为人类可读格式
+     * 并去除 @机器人自身的 mention 文本
+     */
+    stripMentionText?: (text: string, mentions?: Array<{ member_openid?: string; nickname?: string; is_you?: boolean }>) => string;
+    /**
+     * 检测当前消息是否 @了机器人
+     */
+    detectWasMentioned?: (ctx: {
+      eventType?: string;
+      mentions?: Array<{ is_you?: boolean; bot?: boolean }>;
+      content?: string;
+      mentionPatterns?: string[];
+    }) => boolean;
+    /** 其他适配器方法 */
+    [key: string]: unknown;
+  }
+
   /**
    * 频道插件接口（泛型）
    */
@@ -349,6 +402,10 @@ declare module "openclaw/plugin-sdk" {
     outbound?: ChannelPluginOutbound;
     /** Gateway 配置 */
     gateway?: ChannelPluginGateway<TAccount>;
+    /** 群消息策略适配器 */
+    groups?: ChannelGroupAdapter;
+    /** @mention 检测与清理适配器 */
+    mentions?: ChannelMentionAdapter;
     /** 启动函数 */
     start?: (runtime: PluginRuntime) => void | Promise<void>;
     /** 停止函数 */
@@ -472,6 +529,52 @@ declare module "openclaw/plugin-sdk" {
     enabled: boolean;
     allowTopLevel?: boolean;
   }): OpenClawConfig;
+
+  // ============ 群访问策略引擎（核心框架标准） ============
+
+  /**
+   * 群组访问策略类型
+   * - "open": 所有群消息都响应
+   * - "disabled": 不响应任何群消息
+   * - "allowlist": 仅响应白名单中的群
+   */
+  export type GroupPolicy = "open" | "disabled" | "allowlist";
+
+  /**
+   * 基于白名单匹配的群访问决策原因
+   */
+  export type MatchedGroupAccessReason =
+    | "allowed"
+    | "disabled"
+    | "missing_match_input"
+    | "empty_allowlist"
+    | "not_allowlisted";
+
+  /**
+   * 基于白名单匹配的群访问决策结果
+   */
+  export type MatchedGroupAccessDecision = {
+    allowed: boolean;
+    groupPolicy: GroupPolicy;
+    reason: MatchedGroupAccessReason;
+  };
+
+  /**
+   * 核心框架标准群访问策略评估引擎
+   * 基于 policy + allowlist 匹配结果评估群组是否允许访问
+   *
+   * 其他渠道（Telegram、Line、Nextcloud Talk）均使用此标准引擎，
+   * 而非手写 switch/case。
+   *
+   * @see openclaw/src/plugin-sdk/group-access.ts
+   */
+  export function evaluateMatchedGroupAccessForPolicy(params: {
+    groupPolicy: GroupPolicy;
+    allowlistConfigured: boolean;
+    allowlistMatched: boolean;
+    requireMatchInput?: boolean;
+    hasMatchInput?: boolean;
+  }): MatchedGroupAccessDecision;
 
   // ============ 其他导出 ============
 

@@ -7,7 +7,7 @@ import {
 } from "openclaw/plugin-sdk";
 
 import type { ResolvedQQBotAccount } from "./types.js";
-import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId } from "./config.js";
+import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId, resolveRequireMention, resolveToolPolicy, resolveGroupConfig } from "./config.js";
 import { sendText, sendMedia } from "./outbound.js";
 import { startGateway } from "./gateway.js";
 import { qqbotOnboardingAdapter } from "./onboarding.js";
@@ -69,6 +69,97 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     blockStreaming: false,
   },
   reload: { configPrefixes: ["channels.qqbot"] },
+
+  // ============ 群消息策略适配器（对齐 Discord 标准 3 方法） ============
+  groups: {
+    /**
+     * 解析指定群是否需要 @机器人才响应
+     * 优先级：具体 groupOpenid 配置 > 通配符 "*" > 默认 true
+     */
+    resolveRequireMention: ({ cfg, accountId, groupId }) => {
+      return resolveRequireMention(cfg, groupId, accountId);
+    },
+
+    /**
+     * 解析群聊中 AI 可使用的工具范围
+     * 群聊默认 restricted（限制敏感工具，防止误操作）
+     */
+    resolveToolPolicy: ({ cfg, accountId, groupId }) => {
+      return resolveToolPolicy(cfg, groupId, accountId);
+    },
+
+    /**
+     * 返回 QQ Bot 平台特有的群聊行为提示
+     * 对齐 Discord 的 resolveGroupIntroHint 标准接口：
+     * - 框架的 buildGroupIntro 会自动处理 activation mode / silenceToken / lurk 等通用逻辑
+     * - 此方法只返回 QQ Bot 独有的平台限制提示
+     */
+    resolveGroupIntroHint: ({ cfg, accountId, groupId }) => {
+      const groupCfg = resolveGroupConfig(cfg, groupId, accountId);
+      const hints: string[] = [];
+      // 群名称信息
+      if (groupCfg.name) {
+        hints.push(`当前群: ${groupCfg.name}`);
+      }
+      // 注意：bot 互聊防护、@状态相关的行为指引已移至 gateway.ts
+      // 根据 event.senderIsBot / wasMentioned 动态注入差异化 PE
+      return hints.join(" ");
+    },
+  },
+
+  // ============ @mention 检测与清理适配器 ============
+  mentions: {
+    /**
+     * 清理 @mention 文本
+     * QQ Bot 的 mention 格式为 <@member_openid>，需要：
+     * 1. 将 <@xxx> 替换为 @用户名（人类可读）
+     * 2. 去除 @机器人自身的 mention 文本（避免注入 AI）
+     */
+    stripMentionText: (text, mentions) => {
+      if (!text || !mentions?.length) return text;
+      let cleaned = text;
+      for (const m of mentions) {
+        const openid = (m as any).member_openid ?? (m as any).id ?? (m as any).user_openid;
+        if (!openid) continue;
+        if (m.is_you) {
+          // 去除 @机器人 自身的 mention
+          cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), "").trim();
+        } else {
+          // 将 <@openid> 替换为 @用户名（兼容 nickname / username 两种字段名）
+          const displayName = m.nickname ?? (m as any).username;
+          if (displayName) {
+            cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), `@${displayName}`);
+          }
+        }
+      }
+      return cleaned;
+    },
+
+    /**
+     * 检测当前消息是否 @了机器人
+     * 优先级（高→低）：
+     * 1. event.mentions[].is_you === true（平台级 @检测）
+     * 2. eventType === "GROUP_AT_MESSAGE_CREATE"（事件类型判断）
+     * 3. mentionPatterns 正则匹配（配置的自定义模式）
+     */
+    detectWasMentioned: ({ eventType, mentions, content, mentionPatterns }) => {
+      // 1. 平台级 @检测
+      if (mentions?.some((m) => m.is_you)) return true;
+      // 2. 事件类型判断
+      if (eventType === "GROUP_AT_MESSAGE_CREATE") return true;
+      // 3. 自定义 mentionPatterns 正则匹配
+      if (mentionPatterns?.length && content) {
+        for (const pattern of mentionPatterns) {
+          try {
+            if (new RegExp(pattern, "i").test(content)) return true;
+          } catch {
+            // 无效正则，跳过
+          }
+        }
+      }
+      return false;
+    },
+  },
   // CLI onboarding wizard
   onboarding: qqbotOnboardingAdapter,
 
