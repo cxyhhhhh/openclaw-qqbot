@@ -852,20 +852,47 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const isGroupPeer = peerId.startsWith("group:") || peerId.startsWith("guild:");
 
         // 群聊场景：将队列中排队的多条消息合并为一条，一次性发给模型
+        // 但斜杠命令（以 / 开头）不参与合并，单独优先处理，确保框架能正确识别和执行指令
         if (isGroupPeer && queue.length > 1 && handleMessageFnRef) {
-          const batch = queue.splice(0, queue.length);
-          totalEnqueued = Math.max(0, totalEnqueued - batch.length);
+          const all = queue.splice(0, queue.length);
+          totalEnqueued = Math.max(0, totalEnqueued - all.length);
 
-          const merged = mergeGroupMessages(batch);
-          log?.info(
-            `[qqbot:${account.accountId}] Merged ${batch.length} queued group messages for ${peerId} into one`
-          );
+          // 分离：指令消息 vs 普通消息
+          const commands: QueuedMessage[] = [];
+          const normal: QueuedMessage[] = [];
+          for (const m of all) {
+            if ((m.content ?? "").trim().startsWith("/")) {
+              commands.push(m);
+            } else {
+              normal.push(m);
+            }
+          }
 
-          try {
-            await handleMessageFnRef(merged);
-            messagesProcessed += batch.length;
-          } catch (err) {
-            log?.error(`[qqbot:${account.accountId}] Message processor error for ${peerId} (merged batch of ${batch.length}): ${err}`);
+          // 1) 指令消息：逐条独立处理（不合并），优先于普通消息
+          for (const cmd of commands) {
+            try {
+              log?.info(`[qqbot:${account.accountId}] Processing command independently for ${peerId}: ${(cmd.content ?? "").trim().slice(0, 50)}`);
+              await handleMessageFnRef(cmd);
+              messagesProcessed++;
+            } catch (err) {
+              log?.error(`[qqbot:${account.accountId}] Command processor error for ${peerId}: ${err}`);
+            }
+          }
+
+          // 2) 普通消息：合并后处理
+          if (normal.length > 0) {
+            const merged = mergeGroupMessages(normal);
+            if (normal.length > 1) {
+              log?.info(
+                `[qqbot:${account.accountId}] Merged ${normal.length} queued group messages for ${peerId} into one`
+              );
+            }
+            try {
+              await handleMessageFnRef(merged);
+              messagesProcessed += normal.length;
+            } catch (err) {
+              log?.error(`[qqbot:${account.accountId}] Message processor error for ${peerId} (merged batch of ${normal.length}): ${err}`);
+            }
           }
           continue;
         }
