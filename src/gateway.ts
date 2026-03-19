@@ -28,6 +28,82 @@ import { getQQBotDataDir, isLocalPath as isLocalFilePath, normalizePath, sanitiz
 import { MSG, formatMediaErrorMessage } from "./user-messages.js";
 import { sendPhoto, sendVoice, sendVideoMsg, sendDocument, sendMedia as sendMediaAuto, type MediaTargetContext } from "./outbound.js";
 
+// ---------------------------------------------------------------------------
+// /activation 命令支持：读取 session store 中的 groupActivation 值
+// 核心框架的 /activation 命令会将 groupActivation 写入 session store，
+// 但 plugin-sdk 未导出 loadSessionStore/resolveStorePath，
+// 因此在插件侧内联实现读取逻辑（只读，不写入）。
+// ---------------------------------------------------------------------------
+
+type GroupActivationMode = "mention" | "always";
+
+/**
+ * 解析 session store 文件路径
+ * 对齐核心框架 resolveStorePath + resolveDefaultSessionStorePath 逻辑
+ */
+function resolveSessionStorePath(cfg: Record<string, unknown>, agentId?: string): string {
+  const sessionCfg = (cfg as any)?.session;
+  const store: string | undefined = sessionCfg?.store;
+  const resolvedAgentId = agentId || "default";
+
+  if (store) {
+    let expanded = store;
+    if (expanded.includes("{agentId}")) {
+      expanded = expanded.replaceAll("{agentId}", resolvedAgentId);
+    }
+    if (expanded.startsWith("~")) {
+      const home = process.env.HOME || process.env.USERPROFILE || "";
+      expanded = expanded.replace(/^~/, home);
+    }
+    return path.resolve(expanded);
+  }
+
+  // 默认路径: ~/.openclaw/agents/{agentId}/sessions/sessions.json
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim()
+    || process.env.CLAWDBOT_STATE_DIR?.trim()
+    || path.join(process.env.HOME || process.env.USERPROFILE || "", ".openclaw");
+  return path.join(stateDir, "agents", resolvedAgentId, "sessions", "sessions.json");
+}
+
+/**
+ * 从 session store 读取指定 sessionKey 的 groupActivation 值
+ *
+ * 优先级（对齐核心框架 resolveGroupActivationFor）：
+ * 1. session store 中的 groupActivation（/activation 命令动态设置）
+ * 2. 配置文件中的 requireMention（转换为 activation mode）
+ *
+ * @returns "mention" | "always"
+ */
+function resolveGroupActivation(params: {
+  cfg: Record<string, unknown>;
+  agentId: string;
+  sessionKey: string;
+  configRequireMention: boolean;
+}): GroupActivationMode {
+  const defaultActivation: GroupActivationMode = params.configRequireMention ? "mention" : "always";
+
+  try {
+    const storePath = resolveSessionStorePath(params.cfg, params.agentId);
+    if (!fs.existsSync(storePath)) {
+      return defaultActivation;
+    }
+    const raw = fs.readFileSync(storePath, "utf-8");
+    const store = JSON.parse(raw) as Record<string, { groupActivation?: string }>;
+    const entry = store[params.sessionKey];
+    if (!entry?.groupActivation) {
+      return defaultActivation;
+    }
+    const normalized = entry.groupActivation.trim().toLowerCase();
+    if (normalized === "mention" || normalized === "always") {
+      return normalized;
+    }
+    return defaultActivation;
+  } catch {
+    // session store 读取失败时 fallback 到配置文件
+    return defaultActivation;
+  }
+}
+
 /**
  * 通用 OpenAI 兼容 STT（语音转文字）
  *
@@ -693,7 +769,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       }
     }
 
-    // senderIsBot: 只要有一条来自非 bot 用户，就算非 bot（确保不被过度 SKIP）
+    // senderIsBot: 只要有一条来自非 bot 用户，就算非 bot（确保不被过度 NO_REPLY）
     const allFromBot = batch.every((m) => m.senderIsBot);
 
     return {
@@ -1423,15 +1499,29 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             content: event.content,
           }) ?? false;
 
-          // 3. requireMention 门控
+          // 3. requireMention 门控（对齐核心框架 resolveGroupActivationFor 逻辑）
+          // 优先级：session store 中的 /activation 命令 > 配置文件 requireMention > 默认值
           // 未被 @ 时：消息仍写入上下文（让 bot 拥有完整对话记忆），但不触发 AI 回复
-          const requireMention = qqbotPlugin.groups?.resolveRequireMention?.({
+          const configRequireMention = qqbotPlugin.groups?.resolveRequireMention?.({
             cfg: cfg as any,
             accountId: account.accountId,
             groupId: event.groupOpenid,
           }) ?? true;
 
-          if (requireMention && !wasMentioned) {
+          const activation = resolveGroupActivation({
+            cfg: cfg as any,
+            agentId: route.agentId,
+            sessionKey: route.sessionKey,
+            configRequireMention,
+          });
+          const requireMention = activation === "mention";
+
+          // 斜杠命令（如 /activation always）即使在 mention 模式下也必须放行，
+          // 否则用户无法通过命令切换 activation 模式。
+          // 对齐核心框架 group-gating.ts 的 shouldBypassMention 逻辑。
+          const isSlashCommand = event.content?.trim().startsWith("/");
+
+          if (requireMention && !wasMentioned && !isSlashCommand) {
             // 非@消息：记录到群历史缓存后直接返回，不调用 AI 模型（对齐 Discord/WhatsApp 方案）
             // 下次被@时，累积的历史消息会通过 buildPendingHistoryContext 注入上下文
             const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
@@ -1449,7 +1539,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 messageId: event.messageId,
               },
             });
-            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: requireMention=true but not mentioned, recorded to history (limit=${historyLimit}, cached=${(groupHistories.get(event.groupOpenid) ?? []).length})`);
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: activation=${activation} (configRequireMention=${configRequireMention}) not mentioned, recorded to history (limit=${historyLimit}, cached=${(groupHistories.get(event.groupOpenid) ?? []).length})`);
             return;
           }
 
@@ -1848,9 +1938,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
                 let replyText = payload.text ?? "";
                 
-                // 群消息：模型回复 [SKIP] 表示无需回复，跳过发送
-                if (event.type === "group" && replyText.trim() === "[SKIP]") {
-                  log?.info(`[qqbot:${account.accountId}] Model decided to skip group message from ${event.senderId}: ${event.content?.slice(0, 50)}`);
+                // 群消息：模型回复 NO_REPLY 表示无需回复，跳过发送（对齐核心框架 SILENT_REPLY_TOKEN）
+                // 注意：核心框架的 reply-delivery 已会拦截 NO_REPLY，此处为双重保险
+                const trimmedReply = replyText.trim();
+                if (event.type === "group" && (trimmedReply === "NO_REPLY" || trimmedReply === "[SKIP]")) {
+                  log?.info(`[qqbot:${account.accountId}] Model decided to skip group message (token=${trimmedReply}) from ${event.senderId}: ${event.content?.slice(0, 50)}`);
                   return;
                 }
                 
