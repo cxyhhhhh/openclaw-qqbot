@@ -55,6 +55,113 @@ function getFrameworkVersion(): string {
   return _frameworkVersion;
 }
 
+// ============ 热更新兼容性检查 ============
+
+/**
+ * 热更新可执行的环境要求：
+ * - 最低 OpenClaw 框架版本
+ * - 支持的操作系统
+ * - 最低 Node.js 版本
+ */
+const UPGRADE_REQUIREMENTS = {
+  /** OpenClaw 最低版本（YYYY.M.D 格式，如 "2026.3.10"） */
+  minFrameworkVersion: "2026.3.10",
+  /** 支持的操作系统列表（process.platform 值） */
+  supportedPlatforms: ["darwin", "linux", "win32"] as string[],
+  /** 最低 Node.js 版本 */
+  minNodeVersion: "18.0.0",
+};
+
+interface UpgradeCompatResult {
+  ok: boolean;
+  errors: string[];
+}
+
+/**
+ * 解析框架版本字符串中的日期版本号
+ * 输入示例: "OpenClaw 2026.3.13 (61d171a)" → "2026.3.13"
+ */
+function parseFrameworkDateVersion(versionStr: string): string | null {
+  const m = versionStr.match(/(\d{4}\.\d{1,2}\.\d{1,2})/);
+  return m ? m[1] : null;
+}
+
+/**
+ * 比较 YYYY.M.D 格式的版本号
+ * @returns >0 if a > b, <0 if a < b, 0 if equal
+ */
+function compareDateVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * 比较 semver 版本号（简化版，仅比较 major.minor.patch）
+ */
+function compareSemver(a: string, b: string): number {
+  const parse = (v: string) => v.replace(/^v/, "").split(".").map(Number);
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < 3; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * 检查当前环境是否满足热更新要求
+ */
+function checkUpgradeCompatibility(): UpgradeCompatResult {
+  const errors: string[] = [];
+  const req = UPGRADE_REQUIREMENTS;
+
+  // 1. 检查操作系统
+  const platform = process.platform;
+  if (!req.supportedPlatforms.includes(platform)) {
+    const supported = req.supportedPlatforms.map(p => {
+      if (p === "darwin") return "macOS";
+      if (p === "linux") return "Linux";
+      if (p === "win32") return "Windows";
+      return p;
+    }).join("、");
+    const current = platform === "win32" ? "Windows"
+      : platform === "darwin" ? "macOS"
+      : platform;
+    errors.push(`❌ 当前操作系统 **${current}** 不支持热更新（支持：${supported}）`);
+  }
+
+  // 2. 检查 OpenClaw 框架版本
+  const fwVersion = getFrameworkVersion();
+  if (fwVersion === "unknown") {
+    errors.push(`⚠️ 无法检测 OpenClaw 框架版本，热更新可能失败`);
+  } else {
+    const dateVer = parseFrameworkDateVersion(fwVersion);
+    if (dateVer && compareDateVersions(dateVer, req.minFrameworkVersion) < 0) {
+      errors.push(`❌ OpenClaw 框架版本过低：当前 **${dateVer}**，热更新要求最低 **${req.minFrameworkVersion}**。请先升级框架：\`openclaw upgrade\``);
+    }
+  }
+
+  // 3. 检查 Node.js 版本
+  const nodeVer = process.version.replace(/^v/, "");
+  if (compareSemver(nodeVer, req.minNodeVersion) < 0) {
+    errors.push(`❌ Node.js 版本过低：当前 **v${nodeVer}**，热更新要求最低 **v${req.minNodeVersion}**`);
+  }
+
+  // 4. 检查系统架构（arm 等特殊架构提示）
+  const arch = process.arch;
+  if (arch !== "x64" && arch !== "arm64") {
+    errors.push(`⚠️ 当前 CPU 架构 **${arch}** 未经充分测试，热更新可能存在兼容性问题`);
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
 // ============ 类型定义 ============
 
 /** 斜杠指令上下文（消息元数据 + 运行时状态） */
@@ -256,20 +363,22 @@ function findCli(): string | null {
 
 /**
  * 找到升级脚本路径（兼容源码运行、dist 运行、已安装扩展目录）
+ * Windows 优先查找 .ps1，Mac/Linux 查找 .sh
  */
 function getUpgradeScriptPath(): string | null {
   const currentFile = fileURLToPath(import.meta.url);
   const currentDir = path.dirname(currentFile);
+  const scriptName = isWindows() ? "upgrade-via-npm.ps1" : "upgrade-via-npm.sh";
 
   const candidates = [
-    path.resolve(currentDir, "..", "..", "scripts", "upgrade-via-npm.sh"),
-    path.resolve(currentDir, "..", "scripts", "upgrade-via-npm.sh"),
-    path.resolve(process.cwd(), "scripts", "upgrade-via-npm.sh"),
+    path.resolve(currentDir, "..", "..", "scripts", scriptName),
+    path.resolve(currentDir, "..", "scripts", scriptName),
+    path.resolve(process.cwd(), "scripts", scriptName),
   ];
 
   const homeDir = getHomeDir();
   for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
-    candidates.push(path.join(homeDir, `.${cli}`, "extensions", "openclaw-qqbot", "scripts", "upgrade-via-npm.sh"));
+    candidates.push(path.join(homeDir, `.${cli}`, "extensions", "openclaw-qqbot", "scripts", scriptName));
   }
 
   for (const p of candidates) {
@@ -281,11 +390,12 @@ function getUpgradeScriptPath(): string | null {
 
 type HotUpgradeStartResult = {
   ok: boolean;
-  reason?: "no-script" | "no-cli" | "no-bash";
+  reason?: "no-script" | "no-cli" | "no-bash" | "no-powershell";
 };
 
 /**
  * 在 Windows 上查找可用的 bash（Git Bash / WSL 等）
+ * 仅作为 Windows 上的 fallback（优先使用 PowerShell）
  */
 function findBash(): string | null {
   if (!isWindows()) return "bash";
@@ -323,30 +433,57 @@ function switchPluginSourceToNpm(): void {
       const cfgPath = path.join(homeDir, `.${cli}`, `${cli}.json`);
       if (!fs.existsSync(cfgPath)) continue;
 
-      // 读取当前配置
+      // 读取当前配置（保留原始文本用于回退）
       const raw = fs.readFileSync(cfgPath, "utf8");
-      const cfg = JSON.parse(raw);
+
+      let cfg: any;
+      try {
+        cfg = JSON.parse(raw);
+      } catch {
+        // 配置文件已经是损坏的 JSON，不要继续操作以免加剧问题
+        break;
+      }
+
       const inst = cfg?.plugins?.installs?.["openclaw-qqbot"];
       if (!inst || inst.source === "npm") {
         break; // 无需修改
       }
 
-      // 记录修改前的 channels.qqbot 快照，用于写后校验
-      const channelsBefore = JSON.stringify(cfg.channels?.qqbot ?? null);
+      // 记录修改前的完整快照，用于写后校验
+      const channelsBefore = JSON.stringify(cfg.channels ?? null);
 
       inst.source = "npm";
       delete inst.sourcePath;
       const newRaw = JSON.stringify(cfg, null, 4) + "\n";
 
-      // 写后校验：重新解析确认 channels.qqbot 未被破坏
-      const verify = JSON.parse(newRaw);
-      const channelsAfter = JSON.stringify(verify.channels?.qqbot ?? null);
+      // 写后校验：重新解析确认整个 JSON 合法且 channels 未被破坏
+      let verify: any;
+      try {
+        verify = JSON.parse(newRaw);
+      } catch {
+        // stringify 后竟然无法 parse（理论上不会），放弃写入
+        break;
+      }
+      const channelsAfter = JSON.stringify(verify.channels ?? null);
       if (channelsBefore !== channelsAfter) {
         // channels 数据异常，放弃写入
         break;
       }
 
-      fs.writeFileSync(cfgPath, newRaw);
+      // 原子写入：先写临时文件，再 rename 替换，避免写入中途崩溃导致配置文件损坏
+      const tmpPath = cfgPath + ".qqbot-upgrade.tmp";
+      fs.writeFileSync(tmpPath, newRaw, { mode: 0o644 });
+
+      // 再次校验临时文件的完整性
+      try {
+        JSON.parse(fs.readFileSync(tmpPath, "utf8"));
+      } catch {
+        // 写入的临时文件不完整，清理后放弃
+        try { fs.unlinkSync(tmpPath); } catch {}
+        break;
+      }
+
+      fs.renameSync(tmpPath, cfgPath);
       break;
     }
   } catch {
@@ -387,16 +524,30 @@ function preUpgradeCredentialBackup(accountId: string, appId: string): void {
 }
 
 /**
+ * 在 Windows 上查找 PowerShell（pwsh 优先，powershell.exe 兜底）
+ */
+function findPowerShell(): string | null {
+  // pwsh = PowerShell 7+（跨平台），powershell.exe = Windows 内置 5.1
+  for (const ps of ["pwsh", "powershell"]) {
+    try {
+      execFileSync("where", [ps], { timeout: 3000, encoding: "utf8", stdio: "pipe" });
+      return ps;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
  * 执行热更新：执行脚本(--no-restart) → 立即触发 gateway restart
  *
  * fire-and-forget 操作：
- * - 异步执行升级脚本（--no-restart，只做文件替换）
+ * - 异步执行升级脚本（--no-restart / -NoRestart，只做文件替换）
  * - 脚本完成后**立即**触发 gateway restart（当前进程会被杀掉）
  * - 新进程启动时 getStartupGreeting() 检测到版本变更，自动通知管理员
  *
- * 注意：gateway restart 必须在文件替换完成后尽快执行，
- * 否则 openclaw 的配置热加载轮询（~1s）会不断检测到插件目录
- * 已变更但进程未重启，从而产生 "plugin not found" warning 刷屏。
+ * Windows 使用 PowerShell 执行 .ps1 脚本，Mac/Linux 使用 bash 执行 .sh 脚本。
  */
 function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
   const scriptPath = getUpgradeScriptPath();
@@ -405,11 +556,30 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
   const cli = findCli();
   if (!cli) return { ok: false, reason: "no-cli" };
 
-  const bash = findBash();
-  if (!bash) return { ok: false, reason: "no-bash" };
+  let shell: string;
+  let shellArgs: string[];
+
+  if (isWindows()) {
+    // Windows: PowerShell 执行 .ps1
+    const ps = findPowerShell();
+    if (!ps) return { ok: false, reason: "no-powershell" };
+    shell = ps;
+    shellArgs = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-NoRestart",
+      ...(targetVersion ? ["-Version", targetVersion] : []),
+    ];
+  } else {
+    // Mac / Linux: bash 执行 .sh
+    const bash = findBash();
+    if (!bash) return { ok: false, reason: "no-bash" };
+    shell = bash;
+    shellArgs = [scriptPath, "--no-restart", ...(targetVersion ? ["--version", targetVersion] : [])];
+  }
 
   // 异步执行升级脚本
-  execFile(bash, [scriptPath, "--no-restart", ...(targetVersion ? ["--version", targetVersion] : [])], {
+  execFile(shell, shellArgs, {
     timeout: 120_000,
     env: { ...process.env },
     ...(isWindows() ? { windowsHide: true } : {}),
@@ -428,11 +598,9 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
 
     // 文件替换成功，在 restart 之前把 source 从 path 切换为 npm，
     // 确保新进程启动时读到的是 npm source，不会被本地源码覆盖。
-    // 必须在 restart 之前同步完成，避免 openclaw 轮询检测到配置变更后
-    // 先于我们的 restart 触发非预期的 reload。
     switchPluginSourceToNpm();
 
-    // 文件替换成功，立即触发 gateway restart（不再等后续步骤）
+    // 文件替换成功，立即触发 gateway restart
     execFile(cli, ["gateway", "restart"], { timeout: 30_000 }, (restartErr) => {
       if (restartErr) {
         // restart 失败，尝试 stop + start 作为 fallback
@@ -469,6 +637,11 @@ registerCommand({
     `/bot-upgrade --force      强制重新安装当前版本`,
     ``,
     `⚠️ 仅在私聊中可用。升级过程约 30~60 秒，期间服务短暂不可用。`,
+    ``,
+    `环境要求：`,
+    `  - 操作系统：macOS / Linux / Windows`,
+    `  - OpenClaw 框架版本 ≥ ${UPGRADE_REQUIREMENTS.minFrameworkVersion}`,
+    `  - Node.js ≥ v${UPGRADE_REQUIREMENTS.minNodeVersion}`,
   ].join("\n"),
   handler: async (ctx) => {
     // 升级相关指令仅在私聊中可用
@@ -593,6 +766,18 @@ registerCommand({
 
     const targetVersion = versionArg || info.latest || undefined;
 
+    // ── 环境兼容性检查 ──
+    const compat = checkUpgradeCompatibility();
+    if (!compat.ok) {
+      return [
+        `🚫 当前环境不满足热更新要求：`,
+        ``,
+        ...compat.errors,
+        ``,
+        `查看手动升级指引：[点击查看](${url})`,
+      ].join("\n");
+    }
+
     // 加锁
     _upgrading = true;
 
@@ -617,10 +802,17 @@ registerCommand({
           `查看手动升级指引：[点击查看](${url})`,
         ].join("\n");
       }
+      if (startResult.reason === "no-powershell") {
+        return [
+          `❌ 未找到 PowerShell，无法执行热更新`,
+          ``,
+          `请确认系统中已安装 PowerShell（Windows 10+ 自带）`,
+          `查看手动升级指引：[点击查看](${url})`,
+        ].join("\n");
+      }
       return [
         `❌ 当前环境不支持热更新（需要 bash）`,
         ``,
-        `Windows 用户请安装 Git for Windows 后重试`,
         `查看手动升级指引：[点击查看](${url})`,
       ].join("\n");
     }
