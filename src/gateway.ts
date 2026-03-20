@@ -208,10 +208,27 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   });
 
   // 斜杠指令拦截：在入队前匹配插件级指令，命中则直接回复，不入队
+  // 紧急命令列表：这些命令会立即执行，不进入斜杠匹配流程
+  const URGENT_COMMANDS = ["/stop"];
+
   const trySlashCommandOrEnqueue = async (msg: QueuedMessage): Promise<void> => {
     const content = (msg.content ?? "").trim();
     if (!content.startsWith("/")) {
       msgQueue.enqueue(msg);
+      return;
+    }
+
+    // 检测是否为紧急命令 — 立即执行，清空该用户队列
+    const contentLower = content.toLowerCase();
+    const isUrgentCommand = URGENT_COMMANDS.some(cmd => contentLower.startsWith(cmd.toLowerCase()));
+    if (isUrgentCommand) {
+      log?.info(`[qqbot:${account.accountId}] Urgent command detected: ${content.slice(0, 20)}, executing immediately`);
+      const peerId = msgQueue.getMessagePeerId(msg);
+      const droppedCount = msgQueue.clearUserQueue(peerId);
+      if (droppedCount > 0) {
+        log?.info(`[qqbot:${account.accountId}] Dropped ${droppedCount} queued messages for ${peerId} due to urgent command`);
+      }
+      msgQueue.executeImmediate(msg);
       return;
     }
 

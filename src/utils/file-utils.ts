@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import crypto from "node:crypto";
 
 /** QQ Bot API 最大上传文件大小：20MB */
 export const MAX_UPLOAD_SIZE = 20 * 1024 * 1024;
@@ -119,4 +120,48 @@ export function getMimeType(filePath: string): string {
     ".txt": "text/plain",
   };
   return mimeTypes[ext] ?? "application/octet-stream";
+}
+
+/**
+ * 将远端文件下载到本地目录。
+ *
+ * @param url 远端 URL
+ * @param destDir 目标目录（不存在时自动创建）
+ * @param originalFilename 可选的原始文件名（覆盖 URL 推断）
+ * @returns 本地文件完整路径；下载失败返回 null
+ */
+export async function downloadFile(url: string, destDir: string, originalFilename?: string): Promise<string | null> {
+  try {
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+
+    const resp = await fetch(url, { redirect: "follow" });
+    if (!resp.ok || !resp.body) return null;
+
+    // 确定文件名：优先使用 originalFilename，否则从 URL 推断
+    let filename = originalFilename?.trim() || "";
+    if (!filename) {
+      try {
+        const urlPath = new URL(url).pathname;
+        filename = path.basename(urlPath) || "download";
+      } catch {
+        filename = "download";
+      }
+    }
+
+    // 加上时间戳避免同名冲突
+    const ts = Date.now();
+    const ext = path.extname(filename);
+    const base = path.basename(filename, ext) || "file";
+    const rand = crypto.randomBytes(3).toString("hex");
+    const safeFilename = `${base}_${ts}_${rand}${ext}`;
+
+    const destPath = path.join(destDir, safeFilename);
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    await fs.promises.writeFile(destPath, buffer);
+    return destPath;
+  } catch {
+    return null;
+  }
 }

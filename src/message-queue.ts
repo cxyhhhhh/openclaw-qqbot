@@ -41,6 +41,10 @@ export interface MessageQueue {
   startProcessor: (handleMessageFn: (msg: QueuedMessage) => Promise<void>) => void;
   getSnapshot: (senderPeerId: string) => QueueSnapshot;
   getMessagePeerId: (msg: QueuedMessage) => string;
+  /** 清空指定用户的排队消息，返回被丢弃的消息数 */
+  clearUserQueue: (peerId: string) => number;
+  /** 立即执行一条消息（绕过队列），用于紧急命令 */
+  executeImmediate: (msg: QueuedMessage) => void;
 }
 
 /**
@@ -144,5 +148,22 @@ export function createMessageQueue(ctx: MessageQueueContext): MessageQueue {
     };
   };
 
-  return { enqueue, startProcessor, getSnapshot, getMessagePeerId };
+  const clearUserQueue = (peerId: string): number => {
+    const queue = userQueues.get(peerId);
+    if (!queue || queue.length === 0) return 0;
+    const droppedCount = queue.length;
+    queue.length = 0;
+    totalEnqueued = Math.max(0, totalEnqueued - droppedCount);
+    return droppedCount;
+  };
+
+  const executeImmediate = (msg: QueuedMessage): void => {
+    if (handleMessageFnRef) {
+      handleMessageFnRef(msg).catch(err => {
+        log?.error(`[qqbot:${accountId}] Immediate execution error: ${err}`);
+      });
+    }
+  };
+
+  return { enqueue, startProcessor, getSnapshot, getMessagePeerId, clearUserQueue, executeImmediate };
 }

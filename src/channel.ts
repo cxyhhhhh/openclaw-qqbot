@@ -13,6 +13,7 @@ import { startGateway } from "./gateway.js";
 import { qqbotOnboardingAdapter } from "./onboarding.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { saveCredentialBackup, loadCredentialBackup } from "./credential-backup.js";
+import { initApiConfig } from "./api.js";
 
 /** QQ Bot 单条消息文本长度上限 */
 export const TEXT_CHUNK_LIMIT = 5000;
@@ -222,6 +223,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       console.log(`[qqbot:channel] sendText called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, text.length=${text?.length ?? 0}`);
       console.log(`[qqbot:channel] sendText text preview: ${text?.slice(0, 100)}${(text?.length ?? 0) > 100 ? "..." : ""}`);
       const account = resolveQQBotAccount(cfg, accountId);
+      initApiConfig({ markdownSupport: account.markdownSupport });
       console.log(`[qqbot:channel] sendText resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
       const result = await sendText({ to, text, accountId, replyToId, account });
       console.log(`[qqbot:channel] sendText result: messageId=${result.messageId}, error=${result.error ?? "none"}`);
@@ -234,6 +236,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     sendMedia: async ({ to, text, mediaUrl, accountId, replyToId, cfg }) => {
       console.log(`[qqbot:channel] sendMedia called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, mediaUrl=${mediaUrl?.slice(0, 80)}, text.length=${text?.length ?? 0}`);
       const account = resolveQQBotAccount(cfg, accountId);
+      initApiConfig({ markdownSupport: account.markdownSupport });
       console.log(`[qqbot:channel] sendMedia resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
       const result = await sendMedia({ to, text: text ?? "", mediaUrl: mediaUrl ?? "", accountId, replyToId, account });
       console.log(`[qqbot:channel] sendMedia result: messageId=${result.messageId}, error=${result.error ?? "none"}`);
