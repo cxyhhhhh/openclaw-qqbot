@@ -808,7 +808,7 @@ registerCommand({
   usage: [
     `/bot-upgrade              检查是否有新版本（展示信息+确认按钮）`,
     `/bot-upgrade --latest     确认升级到最新版本`,
-    `/bot-upgrade --version X  升级到指定版本（如 1.6.4-alpha.7）`,
+    `/bot-upgrade --version X  升级到指定版本（如 1.6.5）`,
     `/bot-upgrade --force      强制重新安装当前版本`,
     ``,
     `⚠️ 仅在私聊中可用。升级过程约 30~60 秒，期间服务短暂不可用。`,
@@ -850,7 +850,7 @@ registerCommand({
       if (t === "--version") {
         const next = tokens[i + 1];
         if (!next || next.startsWith("--")) {
-          return `❌ 参数错误：--version 需要版本号\n\n示例：/bot-upgrade --version 1.6.4-alpha.1`;
+          return `❌ 参数错误：--version 需要版本号\n\n示例：/bot-upgrade --version 1.6.5`;
         }
         versionArg = next.replace(/^v/, "");
         i += 1;
@@ -859,7 +859,7 @@ registerCommand({
       if (t.startsWith("--version=")) {
         const v = t.slice("--version=".length).trim();
         if (!v) {
-          return `❌ 参数错误：--version 需要版本号\n\n示例：/bot-upgrade --version 1.6.4-alpha.1`;
+          return `❌ 参数错误：--version 需要版本号\n\n示例：/bot-upgrade --version 1.6.5`;
         }
         versionArg = v.replace(/^v/, "");
         continue;

@@ -181,7 +181,7 @@ Shows framework version, plugin version, and a direct link to the official repos
 
 > **You**: `/bot-upgrade`
 >
-> **QQBot**: 📌 Current: v1.6.4-alpha.12 / ✅ New version v1.6.4 available / Click button below to confirm
+> **QQBot**: 📌 Current: v1.6.3 / ✅ New version v1.6.4 available / Click button below to confirm
 
 Send in private chat to upgrade the plugin without server login. Supported usage:
 
