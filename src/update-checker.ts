@@ -31,7 +31,12 @@ try {
 
 export interface UpdateInfo {
   current: string;
+  /** 最佳升级目标（prerelease 用户优先 alpha，稳定版用户取 latest） */
   latest: string | null;
+  /** 稳定版 dist-tag */
+  stable: string | null;
+  /** alpha dist-tag */
+  alpha: string | null;
   hasUpdate: boolean;
   checkedAt: number;
   error?: string;
@@ -73,13 +78,24 @@ async function fetchDistTags(): Promise<Record<string, string>> {
 
 function buildUpdateInfo(tags: Record<string, string>): UpdateInfo {
   const currentIsPrerelease = CURRENT_VERSION.includes("-");
-  const compareTarget = currentIsPrerelease
-    ? (tags.alpha || tags.latest || null)
-    : (tags.latest || null);
+  const stableTag = tags.latest || null;
+  const alphaTag = tags.alpha || null;
+
+  // 严格隔离：alpha 只跟 alpha 比，正式版只跟正式版比，不交叉
+  const compareTarget = currentIsPrerelease ? alphaTag : stableTag;
+
   const hasUpdate = typeof compareTarget === "string"
     && compareTarget !== CURRENT_VERSION
     && compareVersions(compareTarget, CURRENT_VERSION) > 0;
-  return { current: CURRENT_VERSION, latest: compareTarget, hasUpdate, checkedAt: Date.now() };
+
+  return {
+    current: CURRENT_VERSION,
+    latest: compareTarget,
+    stable: stableTag,
+    alpha: alphaTag,
+    hasUpdate,
+    checkedAt: Date.now(),
+  };
 }
 
 /** gateway 启动时调用，保存 log 引用 */
@@ -104,7 +120,7 @@ export async function getUpdateInfo(): Promise<UpdateInfo> {
     return buildUpdateInfo(tags);
   } catch (err: any) {
     _log?.debug?.(`[qqbot:update-checker] check failed: ${err.message}`);
-    return { current: CURRENT_VERSION, latest: null, hasUpdate: false, checkedAt: Date.now(), error: err.message };
+    return { current: CURRENT_VERSION, latest: null, stable: null, alpha: null, hasUpdate: false, checkedAt: Date.now(), error: err.message };
   }
 }
 

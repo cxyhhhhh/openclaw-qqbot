@@ -36,9 +36,14 @@ let _frameworkVersion: string | null = null;
 function getFrameworkVersion(): string {
   if (_frameworkVersion !== null) return _frameworkVersion;
   try {
+    // 先尝试 PATH 中的 CLI
+    // Windows 上 npm 安装的 CLI 通常是 .cmd wrapper，execFileSync 需要 shell:true 才能执行
     for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
       try {
-        const out = execFileSync(cli, ["--version"], { timeout: 3000, encoding: "utf8" }).trim();
+        const out = execFileSync(cli, ["--version"], {
+          timeout: 3000, encoding: "utf8",
+          ...(isWindows() ? { shell: true } : {}),
+        }).trim();
         // 输出格式: "OpenClaw 2026.3.13 (61d171a)"
         if (out) {
           _frameworkVersion = out;
@@ -46,6 +51,15 @@ function getFrameworkVersion(): string {
         }
       } catch {
         continue;
+      }
+    }
+    // 尝试 findCli() 找到的完整路径
+    const cliPath = findCli();
+    if (cliPath) {
+      const out = execCliSync(cliPath, ["--version"]);
+      if (out) {
+        _frameworkVersion = out;
+        return _frameworkVersion;
       }
     }
   } catch {
@@ -65,7 +79,7 @@ function getFrameworkVersion(): string {
  */
 const UPGRADE_REQUIREMENTS = {
   /** OpenClaw 最低版本（YYYY.M.D 格式，如 "2026.3.10"） */
-  minFrameworkVersion: "2026.3.10",
+  minFrameworkVersion: "2026.3.2",
   /** 支持的操作系统列表（process.platform 值） */
   supportedPlatforms: ["darwin", "linux", "win32"] as string[],
   /** 最低 Node.js 版本 */
@@ -75,6 +89,7 @@ const UPGRADE_REQUIREMENTS = {
 interface UpgradeCompatResult {
   ok: boolean;
   errors: string[];
+  warnings: string[];
 }
 
 /**
@@ -119,6 +134,7 @@ function compareSemver(a: string, b: string): number {
  */
 function checkUpgradeCompatibility(): UpgradeCompatResult {
   const errors: string[] = [];
+  const warnings: string[] = [];
   const req = UPGRADE_REQUIREMENTS;
 
   // 1. 检查操作系统
@@ -139,7 +155,9 @@ function checkUpgradeCompatibility(): UpgradeCompatResult {
   // 2. 检查 OpenClaw 框架版本
   const fwVersion = getFrameworkVersion();
   if (fwVersion === "unknown") {
-    errors.push(`⚠️ 无法检测 OpenClaw 框架版本，热更新可能失败`);
+    // 打包环境（HoldClaw/QQAIO）中 CLI 可能不在 PATH，版本检测会失败，
+    // 但 findCli() 的 fallback 仍可能找到 CLI 执行升级，所以只是警告不阻断。
+    warnings.push(`⚠️ 无法检测 OpenClaw 框架版本，热更新可能失败`);
   } else {
     const dateVer = parseFrameworkDateVersion(fwVersion);
     if (dateVer && compareDateVersions(dateVer, req.minFrameworkVersion) < 0) {
@@ -156,10 +174,10 @@ function checkUpgradeCompatibility(): UpgradeCompatResult {
   // 4. 检查系统架构（arm 等特殊架构提示）
   const arch = process.arch;
   if (arch !== "x64" && arch !== "arm64") {
-    errors.push(`⚠️ 当前 CPU 架构 **${arch}** 未经充分测试，热更新可能存在兼容性问题`);
+    warnings.push(`⚠️ 当前 CPU 架构 **${arch}** 未经充分测试，热更新可能存在兼容性问题`);
   }
 
-  return { ok: errors.length === 0, errors };
+  return { ok: errors.length === 0, errors, warnings };
 }
 
 // ============ 类型定义 ============
@@ -346,7 +364,12 @@ function saveUpgradeGreetingTarget(accountId: string, appId: string, openid: str
 // ============ 热更新 ============
 
 /**
- * 找到 CLI 命令名（openclaw / clawdbot / moltbot）
+ * 找到 CLI 命令名或完整路径（openclaw / clawdbot / moltbot）
+ *
+ * 查找策略：
+ * 1. 系统 PATH（where / which）
+ * 2. 打包环境（HoldClaw / QQAIO）：从当前文件路径向上推断 CLI 位置
+ * 3. ~/.openclaw/bin/ 等常见安装路径
  */
 function findCli(): string | null {
   const whichCmd = isWindows() ? "where" : "which";
@@ -358,11 +381,100 @@ function findCli(): string | null {
       continue;
     }
   }
+
+  // 打包环境 fallback：从当前文件路径推断 CLI
+  // 典型路径: .../gateway/node_modules/openclaw-qqbot/dist/src/slash-commands.js
+  // CLI 位于: .../gateway/node_modules/openclaw/openclaw.mjs
+  // 或者:     .../gateway/node_modules/.bin/openclaw
+  try {
+    const currentFile = fileURLToPath(import.meta.url);
+    const currentDir = path.dirname(currentFile);
+
+    // 向上查找 node_modules 目录
+    let dir = currentDir;
+    for (let i = 0; i < 10; i++) {
+      const basename = path.basename(dir);
+      if (basename === "node_modules") {
+        // 检查 .bin 下的 CLI
+        for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
+          const binName = isWindows() ? `${cli}.cmd` : cli;
+          const binPath = path.join(dir, ".bin", binName);
+          if (fs.existsSync(binPath)) return binPath;
+        }
+        // 检查 openclaw/openclaw.mjs（直接通过 node 调用）
+        for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
+          const mjsPath = path.join(dir, cli, `${cli}.mjs`);
+          if (fs.existsSync(mjsPath)) return mjsPath;
+        }
+        break;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    // ignore
+  }
+
+  // ~/.openclaw/bin/ 等常见安装路径
+  const homeDir = getHomeDir();
+  for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
+    const ext = isWindows() ? ".exe" : "";
+    const candidates = [
+      path.join(homeDir, `.${cli}`, "bin", `${cli}${ext}`),
+      path.join(homeDir, `.${cli}`, `${cli}${ext}`),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+  }
+
   return null;
 }
 
 /**
- * 找到升级脚本路径（兼容源码运行、dist 运行、已安装扩展目录）
+ * 同步执行 CLI 命令。
+ * 当 cliPath 是 .mjs 文件时，自动通过 process.execPath (node) 调用。
+ * Windows 上对非完整路径的命令名（如 "openclaw"）启用 shell，以兼容 .cmd wrapper。
+ */
+function execCliSync(cliPath: string, args: string[]): string | null {
+  try {
+    if (cliPath.endsWith(".mjs")) {
+      return execFileSync(process.execPath, [cliPath, ...args], {
+        timeout: 5000, encoding: "utf8", stdio: "pipe",
+      }).trim() || null;
+    }
+    const needsShell = isWindows() && !path.isAbsolute(cliPath) && !cliPath.endsWith(".cmd") && !cliPath.endsWith(".exe");
+    return execFileSync(cliPath, args, {
+      timeout: 5000, encoding: "utf8", stdio: "pipe",
+      ...(needsShell ? { shell: true } : {}),
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 异步执行 CLI 命令。
+ * 当 cliPath 是 .mjs 文件时，自动通过 process.execPath (node) 调用。
+ * Windows 上对非完整路径的命令名启用 shell，以兼容 .cmd wrapper。
+ */
+function execCliAsync(
+  cliPath: string,
+  args: string[],
+  opts: { timeout?: number; env?: NodeJS.ProcessEnv; windowsHide?: boolean },
+  cb: (error: Error | null, stdout: string, stderr: string) => void,
+): void {
+  if (cliPath.endsWith(".mjs")) {
+    execFile(process.execPath, [cliPath, ...args], opts, cb);
+  } else {
+    const needsShell = isWindows() && !path.isAbsolute(cliPath) && !cliPath.endsWith(".cmd") && !cliPath.endsWith(".exe");
+    execFile(cliPath, args, { ...opts, ...(needsShell ? { shell: true } : {}) }, cb);
+  }
+}
+
+/**
+ * 找到升级脚本路径（兼容源码运行、dist 运行、已安装扩展目录、打包环境）
  * Windows 优先查找 .ps1，Mac/Linux 查找 .sh
  */
 function getUpgradeScriptPath(): string | null {
@@ -371,10 +483,23 @@ function getUpgradeScriptPath(): string | null {
   const scriptName = isWindows() ? "upgrade-via-npm.ps1" : "upgrade-via-npm.sh";
 
   const candidates = [
+    // 源码运行: src/slash-commands.ts → ../../scripts/
+    // dist 运行: dist/src/slash-commands.js → ../../scripts/
     path.resolve(currentDir, "..", "..", "scripts", scriptName),
+    // npm 安装: node_modules/@tencent-connect/openclaw-qqbot/dist/src → ../../scripts
     path.resolve(currentDir, "..", "scripts", scriptName),
     path.resolve(process.cwd(), "scripts", scriptName),
   ];
+
+  // 向上查找包含 scripts/ 的祖先目录（适应各种嵌套深度的打包环境）
+  let dir = currentDir;
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(dir, "scripts", scriptName);
+    if (!candidates.includes(candidate)) candidates.push(candidate);
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
 
   const homeDir = getHomeDir();
   for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
@@ -601,12 +726,12 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
     switchPluginSourceToNpm();
 
     // 文件替换成功，立即触发 gateway restart
-    execFile(cli, ["gateway", "restart"], { timeout: 30_000 }, (restartErr) => {
+    execCliAsync(cli, ["gateway", "restart"], { timeout: 30_000 }, (restartErr) => {
       if (restartErr) {
         // restart 失败，尝试 stop + start 作为 fallback
-        execFile(cli, ["gateway", "stop"], { timeout: 10_000 }, () => {
+        execCliAsync(cli, ["gateway", "stop"], { timeout: 10_000 }, () => {
           setTimeout(() => {
-            execFile(cli, ["gateway", "start"], { timeout: 30_000 }, () => {});
+            execCliAsync(cli, ["gateway", "start"], { timeout: 30_000 }, () => {});
           }, 1000);
         });
       }
@@ -710,14 +835,15 @@ registerCommand({
         ].join("\n");
       }
       if (!info.hasUpdate) {
-        return [
+        const lines = [
           `✅ 当前已是最新版本 v${PLUGIN_VERSION}`,
           ``,
           `项目地址：[GitHub](${GITHUB_URL})`,
-        ].join("\n");
+        ];
+        return lines.join("\n");
       }
 
-      // 有新版本：展示信息 + 确认按钮
+      // 有新版本：展示信息 + 确认按钮（同通道：alpha 只展示 alpha，正式版只展示正式版）
       return [
         `🆕 发现新版本`,
         ``,
@@ -766,6 +892,9 @@ registerCommand({
 
     const targetVersion = versionArg || info.latest || undefined;
 
+    // --force 时如果 targetVersion 等于当前版本，属于强制重装
+    const isReinstall = isForce && targetVersion === PLUGIN_VERSION;
+
     // ── 环境兼容性检查 ──
     const compat = checkUpgradeCompatibility();
     if (!compat.ok) {
@@ -773,6 +902,7 @@ registerCommand({
         `🚫 当前环境不满足热更新要求：`,
         ``,
         ...compat.errors,
+        ...(compat.warnings.length ? [``, ...compat.warnings] : []),
         ``,
         `查看手动升级指引：[点击查看](${url})`,
       ].join("\n");
@@ -819,28 +949,58 @@ registerCommand({
 
     saveUpgradeGreetingTarget(ctx.accountId, ctx.appId, ctx.senderId);
 
-    const resultLines = [
-      `🔄 正在升级...`,
-      ``,
-      `当前版本：v${PLUGIN_VERSION}`,
-    ];
-    if (targetVersion) {
-      resultLines.push(`目标版本：v${targetVersion}`);
-    }
-    resultLines.push(``);
-    resultLines.push(`预计 30~60 秒完成，届时会自动通知您`);
+    const resultLines = isReinstall
+      ? [
+        `🔄 正在重新安装 v${PLUGIN_VERSION}...`,
+        ``,
+        `预计 30~60 秒完成，届时会自动通知您`,
+      ]
+      : [
+        `🔄 正在升级...`,
+        ``,
+        `当前版本：v${PLUGIN_VERSION}`,
+        ...(targetVersion ? [`目标版本：v${targetVersion}`] : []),
+        ``,
+        `预计 30~60 秒完成，届时会自动通知您`,
+      ];
     return resultLines.join("\n");
   },
 });
 
 /**
+ * 从 openclaw.json / clawdbot.json / moltbot.json 的 logging.file 配置中
+ * 提取用户自定义的日志文件路径（直接文件路径，非目录）。
+ */
+function getConfiguredLogFiles(): string[] {
+  const homeDir = getHomeDir();
+  const files: string[] = [];
+  for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
+    try {
+      const cfgPath = path.join(homeDir, `.${cli}`, `${cli}.json`);
+      if (!fs.existsSync(cfgPath)) continue;
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      const logFile = cfg?.logging?.file;
+      if (logFile && typeof logFile === "string") {
+        files.push(path.resolve(logFile));
+      }
+      break;
+    } catch {
+      // ignore
+    }
+  }
+  return files;
+}
+
+/**
  * /bot-logs — 导出本地日志文件
  *
  * 日志定位策略（兼容腾讯云/各云厂商不同安装路径）：
- * 1. 优先使用 *_STATE_DIR 环境变量（OPENCLAW/CLAWDBOT/MOLTBOT）
+ * 0. 优先从 openclaw.json 的 logging.file 配置中读取自定义日志路径（最精确）
+ * 1. 使用 *_STATE_DIR 环境变量（OPENCLAW/CLAWDBOT/MOLTBOT）
  * 2. 扫描常见状态目录：~/.openclaw, ~/.clawdbot, ~/.moltbot 及其 logs 子目录
  * 3. 扫描 home/cwd/AppData 下名称包含 openclaw/clawdbot/moltbot 的目录
- * 4. 在候选目录中选取最近更新的日志文件（gateway/openclaw/clawdbot/moltbot）
+ * 4. 扫描 /var/log 下的 openclaw/clawdbot/moltbot 目录
+ * 5. 在候选目录中选取最近更新的日志文件（gateway/openclaw/clawdbot/moltbot）
  */
 function collectCandidateLogDirs(): string[] {
   const homeDir = getHomeDir();
@@ -858,6 +1018,12 @@ function collectCandidateLogDirs(): string[] {
     pushDir(path.join(stateDir, "logs"));
   };
 
+  // 0. 从配置文件的 logging.file 提取目录
+  for (const logFile of getConfiguredLogFiles()) {
+    pushDir(path.dirname(logFile));
+  }
+
+  // 1. 环境变量 *_STATE_DIR
   for (const [key, value] of Object.entries(process.env)) {
     if (!value) continue;
     if (/STATE_DIR$/i.test(key) && /(OPENCLAW|CLAWDBOT|MOLTBOT)/i.test(key)) {
@@ -865,11 +1031,13 @@ function collectCandidateLogDirs(): string[] {
     }
   }
 
+  // 2. 常见状态目录
   for (const name of [".openclaw", ".clawdbot", ".moltbot", "openclaw", "clawdbot", "moltbot"]) {
     pushDir(path.join(homeDir, name));
     pushDir(path.join(homeDir, name, "logs"));
   }
 
+  // 3. home/cwd/AppData 下包含 openclaw/clawdbot/moltbot 的子目录
   const searchRoots = new Set<string>([
     homeDir,
     process.cwd(),
@@ -890,6 +1058,30 @@ function collectCandidateLogDirs(): string[] {
       }
     } catch {
       // 无权限或不存在，跳过
+    }
+  }
+
+  // 4. /var/log 下的常见日志目录（Linux 服务器部署场景）
+  if (!isWindows()) {
+    for (const name of ["openclaw", "clawdbot", "moltbot"]) {
+      pushDir(path.join("/var/log", name));
+    }
+  }
+
+  // 5. /tmp 和系统临时目录下的日志（gateway 默认日志路径可能在 /tmp/openclaw/）
+  const tmpRoots = new Set<string>();
+  if (isWindows()) {
+    // Windows: C:\tmp, %TEMP%, %LOCALAPPDATA%\Temp
+    tmpRoots.add("C:\\tmp");
+    if (process.env.TEMP) tmpRoots.add(process.env.TEMP);
+    if (process.env.TMP) tmpRoots.add(process.env.TMP);
+    if (process.env.LOCALAPPDATA) tmpRoots.add(path.join(process.env.LOCALAPPDATA, "Temp"));
+  } else {
+    tmpRoots.add("/tmp");
+  }
+  for (const tmpRoot of tmpRoots) {
+    for (const name of ["openclaw", "clawdbot", "moltbot"]) {
+      pushDir(path.join(tmpRoot, name));
     }
   }
 
@@ -918,6 +1110,11 @@ function collectRecentLogFiles(logDirs: string[]): LogCandidate[] {
       // 文件不存在或无权限
     }
   };
+
+  // 优先级最高：用户在 openclaw.json logging.file 中显式配置的日志文件
+  for (const logFile of getConfiguredLogFiles()) {
+    pushFile(logFile, path.dirname(logFile));
+  }
 
   for (const dir of logDirs) {
     pushFile(path.join(dir, "gateway.log"), dir);
@@ -957,8 +1154,19 @@ registerCommand({
     const recentFiles = collectRecentLogFiles(logDirs).slice(0, 4);
 
     if (recentFiles.length === 0) {
-      const searched = logDirs.map(d => `  - ${d}`).join("\n");
-      return `⚠️ 未找到日志文件\n\n已搜索以下路径：\n${searched}`;
+      const existingDirs = logDirs.filter(d => { try { return fs.existsSync(d); } catch { return false; } });
+      const searched = existingDirs.length > 0
+        ? existingDirs.map(d => `  • ${d}`).join("\n")
+        : logDirs.slice(0, 6).map(d => `  • ${d}`).join("\n") + (logDirs.length > 6 ? `\n  …及其他 ${logDirs.length - 6} 个路径` : "");
+      return [
+        `⚠️ 未找到日志文件`,
+        ``,
+        `已搜索以下${existingDirs.length > 0 ? "已存在的" : ""}路径：`,
+        searched,
+        ``,
+        `💡 如果日志在自定义路径，请在配置文件中添加：`,
+        `  "logging": { "file": "/path/to/your/logfile.log" }`,
+      ].join("\n");
     }
 
     const lines: string[] = [];

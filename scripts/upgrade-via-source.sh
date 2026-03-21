@@ -186,6 +186,34 @@ INSTALL_LOG="/tmp/openclaw-install-$(date +%s).log"
 echo "安装日志文件: $INSTALL_LOG"
 echo "详细信息将记录到日志文件中..."
 
+# ── 临时移除 channels.qqbot 配置 ──
+# openclaw CLI 任何子命令（包括 gateway stop、plugins install）启动时都会校验 openclaw.json，
+# 如果 channels.qqbot 存在但插件还未安装，CLI 不认识该 channel id，
+# 导致 "Config invalid: unknown channel id: qqbot" 而命令失败（鸡生蛋问题）。
+# 解决方案：在所有 openclaw 命令之前把 channels.qqbot 暂存，完成后恢复。
+_QQBOT_CHANNEL_STASH=""
+for _app in openclaw clawdbot moltbot; do
+    _cfg="$HOME/.$_app/$_app.json"
+    if [ -f "$_cfg" ]; then
+        _QQBOT_CHANNEL_STASH=$(node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('$_cfg', 'utf8'));
+            if (cfg.channels && cfg.channels.qqbot) {
+                const stashed = JSON.stringify(cfg.channels.qqbot);
+                delete cfg.channels.qqbot;
+                fs.writeFileSync('$_cfg', JSON.stringify(cfg, null, 4) + '\n');
+                process.stdout.write(stashed);
+            }
+        " 2>/dev/null || true)
+        if [ -n "$_QQBOT_CHANNEL_STASH" ]; then
+            _STASH_APP="$_app"
+            _STASH_CFG="$_cfg"
+            echo "  已暂存 channels.qqbot 配置（避免 CLI 校验失败）"
+        fi
+        break
+    fi
+done
+
 # 安装前先 stop gateway，防止 chokidar 在 plugins install 写入配置的中间状态
 # 触发 restart，导致 "unknown channel id: qqbot" 等错误
 _gw_was_running=0
@@ -251,6 +279,16 @@ if ! openclaw plugins install . 2>&1 | tee "$INSTALL_LOG"; then
         * )
             echo "安装失败，脚本退出。"
             echo "请先解决安装问题后再运行此脚本。"
+            # 恢复 channels.qqbot 后再退出
+            if [ -n "$_QQBOT_CHANNEL_STASH" ] && [ -n "$_STASH_CFG" ] && [ -f "$_STASH_CFG" ]; then
+                node -e "
+                    const fs = require('fs');
+                    const cfg = JSON.parse(fs.readFileSync('$_STASH_CFG', 'utf8'));
+                    if (!cfg.channels) cfg.channels = {};
+                    cfg.channels.qqbot = $_QQBOT_CHANNEL_STASH;
+                    fs.writeFileSync('$_STASH_CFG', JSON.stringify(cfg, null, 4) + '\n');
+                " 2>/dev/null || true
+            fi
             exit 1
             ;;  
     esac
@@ -422,6 +460,18 @@ else
             process.stdout.write("unknown");
         } catch(e) { process.stdout.write("unknown"); }
     ' 2>/dev/null || echo "unknown")
+fi
+
+# ── 恢复 channels.qqbot 配置 ──
+# 安装完成（无论成功或失败），把之前暂存的 channels.qqbot 写回 openclaw.json
+if [ -n "$_QQBOT_CHANNEL_STASH" ] && [ -n "$_STASH_CFG" ] && [ -f "$_STASH_CFG" ]; then
+    node -e "
+        const fs = require('fs');
+        const cfg = JSON.parse(fs.readFileSync('$_STASH_CFG', 'utf8'));
+        if (!cfg.channels) cfg.channels = {};
+        cfg.channels.qqbot = $_QQBOT_CHANNEL_STASH;
+        fs.writeFileSync('$_STASH_CFG', JSON.stringify(cfg, null, 4) + '\n');
+    " 2>/dev/null && echo "  已恢复 channels.qqbot 配置" || echo "  ⚠️  恢复 channels.qqbot 配置失败"
 fi
 
 # 4. 配置机器人通道（仅在需要变更时写入配置，避免无意义覆盖）
