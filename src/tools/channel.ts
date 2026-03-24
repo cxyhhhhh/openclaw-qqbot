@@ -140,19 +140,8 @@ export function registerChannelTool(api: OpenClawPluginApi): void {
       name: "qqbot_channel_api",
       label: "QQBot Channel API",
       description:
-        "QQ 开放平台频道 API HTTP 代理，自动填充鉴权 Token。" +
-        "常用接口速查：" +
-        "频道列表 GET /users/@me/guilds | " +
-        "子频道列表 GET /guilds/{guild_id}/channels | " +
-        "子频道详情 GET /channels/{channel_id} | " +
-        "创建子频道 POST /guilds/{guild_id}/channels | " +
-        "成员列表 GET /guilds/{guild_id}/members?after=0&limit=100 | " +
-        "成员详情 GET /guilds/{guild_id}/members/{user_id} | " +
-        "帖子列表 GET /channels/{channel_id}/threads | " +
-        "发帖 PUT /channels/{channel_id}/threads | " +
-        "创建公告 POST /guilds/{guild_id}/announces | " +
-        "创建日程 POST /channels/{channel_id}/schedules。" +
-        "更多接口和参数详情请阅读 qqbot-channel skill。",
+        "QQ频道（Guild）专用 API 代理——仅在用户明确说出「QQ频道」二字时才调用。" +
+        "「查询频道列表」「频道成员」「发帖」等不含「QQ」前缀的表述禁止调用此工具。",
       parameters: ChannelApiSchema,
       async execute(_toolCallId, params) {
         const p = params as ChannelApiParams;

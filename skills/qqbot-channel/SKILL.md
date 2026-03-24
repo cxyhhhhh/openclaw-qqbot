@@ -1,12 +1,13 @@
 ---
 name: qqbot-channel
-description: QQ 频道管理技能。查询频道列表、子频道、成员、发帖、公告、日程等操作。使用 qqbot_channel_api 工具代理 QQ 开放平台 HTTP 接口，自动处理 Token 鉴权。当用户需要查看频道、管理子频道、查询成员、发布帖子/公告/日程时使用此技能。
+description: QQ频道（Guild）管理技能——仅当用户明确说出"QQ频道"二字时才使用。"查询频道列表""频道成员""发帖"等不含"QQ"前缀的表述不应触发此技能。通过 qqbot_channel_api 工具代理QQ频道 HTTP 接口，支持QQ频道相关操作。
+keywords: ["QQ频道", "QQ频道管理", "QQ频道成员", "QQ频道帖子", "QQ频道论坛", "QQ频道子频道", "QQ Guild"]
 metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 ---
 
-# QQ 频道 API 请求指导
+# QQ频道 API 请求指导
 
-`qqbot_channel_api` 是一个 QQ 开放平台 HTTP 代理工具，**自动填充鉴权 Token**。你只需要指定 HTTP 方法、API 路径、请求体和查询参数。
+`qqbot_channel_api` 是一个QQ频道 HTTP 代理工具，**自动填充鉴权 Token**。你只需要指定 HTTP 方法、API 路径、请求体和查询参数。
 
 ## 📚 详细参考文档
 
@@ -30,14 +31,14 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 
 ## ⭐ 接口速查
 
-### 频道（Guild）
+### QQ频道（Guild）
 
 | 操作 | 方法 | 路径 | 参数说明 |
 |------|------|------|----------|
-| 获取频道列表 | `GET` | `/users/@me/guilds` | query: `before`, `after`, `limit`(最大100) |
-| 获取频道 API 权限 | `GET` | `/guilds/{guild_id}/api_permission` | — |
+| 获取QQ频道列表 | `GET` | `/users/@me/guilds` | query: `before`, `after`, `limit`(最大100) |
+| 获取QQ频道 API 权限 | `GET` | `/guilds/{guild_id}/api_permission` | — |
 
-### 子频道（Channel）
+### QQ频道子频道（Channel）
 
 | 操作 | 方法 | 路径 | 参数说明 |
 |------|------|------|----------|
@@ -49,33 +50,33 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 
 **子频道类型（type）**：`0`=文字, `2`=语音, `4`=分组(position≥2), `10005`=直播, `10006`=应用, `10007`=论坛
 
-### 成员（Member）
+### QQ频道成员（Member）
 
 | 操作 | 方法 | 路径 | 参数说明 |
 |------|------|------|----------|
-| 获取成员列表 | `GET` | `/guilds/{guild_id}/members` | query: `after`(首次填0), `limit`(1-400) |
-| 获取成员详情 | `GET` | `/guilds/{guild_id}/members/{user_id}` | — |
+| 获取QQ频道成员列表 | `GET` | `/guilds/{guild_id}/members` | query: `after`(首次填0), `limit`(1-400) |
+| 获取QQ频道成员详情 | `GET` | `/guilds/{guild_id}/members/{user_id}` | — |
 | 获取身份组成员列表 | `GET` | `/guilds/{guild_id}/roles/{role_id}/members` | query: `start_index`(首次填0), `limit`(1-400) |
 | 获取在线成员数 | `GET` | `/channels/{channel_id}/online_nums` | — |
 
-### 公告（Announces）
+### QQ频道公告（Announces）
 
 | 操作 | 方法 | 路径 | 参数说明 |
 |------|------|------|----------|
-| 创建公告 | `POST` | `/guilds/{guild_id}/announces` | body: `message_id`, `channel_id`, `announces_type`(0=成员,1=欢迎), `recommend_channels`(最多3条) |
-| 删除公告 | `DELETE` | `/guilds/{guild_id}/announces/{message_id}` | message_id 设 `all` 删除所有 |
+| 创建QQ频道公告 | `POST` | `/guilds/{guild_id}/announces` | body: `message_id`, `channel_id`, `announces_type`(0=成员,1=欢迎), `recommend_channels`(最多3条) |
+| 删除QQ频道公告 | `DELETE` | `/guilds/{guild_id}/announces/{message_id}` | message_id 设 `all` 删除所有 |
 
-### 论坛（Forum）— 仅私域机器人
+### QQ频道论坛（Forum）— 仅私域机器人
 
 | 操作 | 方法 | 路径 | 参数说明 |
 |------|------|------|----------|
-| 获取帖子列表 | `GET` | `/channels/{channel_id}/threads` | — |
-| 获取帖子详情 | `GET` | `/channels/{channel_id}/threads/{thread_id}` | — |
-| 发表帖子 | `PUT` | `/channels/{channel_id}/threads` | body: `title`\*, `content`\*, `format`(1=文本,2=HTML,3=Markdown,4=JSON，默认3) |
-| 删除帖子 | `DELETE` | `/channels/{channel_id}/threads/{thread_id}` | ⚠️ 不可逆 |
-| 发表评论 | `POST` | `/channels/{channel_id}/threads/{thread_id}/comment` | body: `thread_author`\*, `content`\*, `thread_create_time`, `image` |
+| 获取QQ频道帖子列表 | `GET` | `/channels/{channel_id}/threads` | — |
+| 获取QQ频道帖子详情 | `GET` | `/channels/{channel_id}/threads/{thread_id}` | — |
+| 发表QQ频道帖子 | `PUT` | `/channels/{channel_id}/threads` | body: `title`\*, `content`\*, `format`(1=文本,2=HTML,3=Markdown,4=JSON，默认3) |
+| 删除QQ频道帖子 | `DELETE` | `/channels/{channel_id}/threads/{thread_id}` | ⚠️ 不可逆 |
+| 发表QQ频道评论 | `POST` | `/channels/{channel_id}/threads/{thread_id}/comment` | body: `thread_author`\*, `content`\*, `thread_create_time`, `image` |
 
-### 日程（Schedule）
+### QQ频道日程（Schedule）
 
 | 操作 | 方法 | 路径 | 参数说明 |
 |------|------|------|----------|
@@ -91,7 +92,7 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 
 ## 💡 调用示例
 
-### 获取频道列表
+### 获取QQ频道列表
 
 ```json
 {
@@ -101,7 +102,7 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 }
 ```
 
-### 获取子频道列表
+### 获取QQ频道子频道列表
 
 ```json
 {
@@ -110,7 +111,7 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 }
 ```
 
-### 创建子频道
+### 创建QQ频道子频道
 
 ```json
 {
@@ -125,7 +126,7 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 }
 ```
 
-### 获取成员列表（分页）
+### 获取QQ频道成员列表（分页）
 
 ```json
 {
@@ -135,7 +136,7 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 }
 ```
 
-### 发表论坛帖子
+### 发表QQ频道论坛帖子
 
 ```json
 {
@@ -149,7 +150,7 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 }
 ```
 
-### 创建日程
+### 创建QQ频道日程
 
 ```json
 {
@@ -194,36 +195,36 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 
 ## 🔄 常用操作流程
 
-### 获取频道和子频道信息
+### 获取QQ频道和子频道信息
 
 ```
-1. GET /users/@me/guilds → 获取频道列表，拿到 guild_id
+1. GET /users/@me/guilds → 获取QQ频道列表，拿到 guild_id
 2. GET /guilds/{guild_id}/channels → 获取子频道列表，拿到 channel_id
 3. GET /channels/{channel_id} → 获取子频道详情
 ```
 
-### 论坛发帖 + 评论
+### QQ频道论坛发帖 + 评论
 
 ```
 1. GET /guilds/{guild_id}/channels → 找到论坛子频道（type=10007）
-2. PUT /channels/{channel_id}/threads → 发表帖子
-3. GET /channels/{channel_id}/threads → 获取帖子列表
-4. GET /channels/{channel_id}/threads/{thread_id} → 获取帖子详情（含 author_id）
-5. POST /channels/{channel_id}/threads/{thread_id}/comment → 发表评论
+2. PUT /channels/{channel_id}/threads → 发表QQ频道帖子
+3. GET /channels/{channel_id}/threads → 获取QQ频道帖子列表
+4. GET /channels/{channel_id}/threads/{thread_id} → 获取QQ频道帖子详情（含 author_id）
+5. POST /channels/{channel_id}/threads/{thread_id}/comment → 发表QQ频道评论
 ```
 
-### 成员管理
+### QQ频道成员管理
 
 ```
 1. GET /users/@me/guilds → 获取 guild_id
-2. GET /guilds/{guild_id}/members?after=0&limit=100 → 获取成员列表
+2. GET /guilds/{guild_id}/members?after=0&limit=100 → 获取QQ频道成员列表
    翻页：用上次最后一个 user.id 作为 after，直到返回空数组
-3. GET /guilds/{guild_id}/members/{user_id} → 获取指定成员详情
+3. GET /guilds/{guild_id}/members/{user_id} → 获取指定QQ频道成员详情
 ```
 
-### 展示成员头像
+### 展示QQ频道成员头像
 
-成员详情返回的 `user.avatar` 是头像 URL，**必须使用 Markdown 图片语法展示**，让用户直接看到头像图片，而非纯文本链接：
+QQ频道成员详情返回的 `user.avatar` 是头像 URL，**必须使用 Markdown 图片语法展示**，让用户直接看到头像图片，而非纯文本链接：
 
 ```
 成员信息：
@@ -251,13 +252,15 @@ metadata: {"openclaw":{"emoji":"📡","requires":{"config":["channels.qqbot"]}}}
 
 ## ⚠️ 注意事项
 
+> **触发约束（最高优先级）**：此技能和 `qqbot_channel_api` 工具**仅在用户明确说出「QQ频道」二字时**才可使用。若用户只说"频道""频道列表""查询频道""成员""帖子"等不含"QQ"前缀的表述，**禁止调用此技能和工具**，应按普通对话处理或询问用户是否指的是 QQ频道。
+
 1. **路径中的占位符**（如 `{guild_id}`、`{channel_id}`）必须替换为实际值
 2. **query 参数的值必须为字符串类型**，如 `{ "limit": "100" }` 而非 `{ "limit": 100 }`
-3. **成员列表翻页**时可能返回重复成员，需按 `user.id` 去重
-4. **公告**的两种类型（消息公告和推荐子频道公告）会互相顶替
-5. **日程**的时间戳为毫秒级字符串
+3. **QQ频道成员列表翻页**时可能返回重复成员，需按 `user.id` 去重
+4. **QQ频道公告**的两种类型（消息公告和推荐子频道公告）会互相顶替
+5. **QQ频道日程**的时间戳为毫秒级字符串
 6. **删除操作不可逆**，请谨慎使用
-7. **论坛操作**仅私域机器人可用
-8. **子频道分组**（type=4）的 `position` 必须 >= 2
-9. **日程操作**有频率限制：单个管理员每天 10 次，单个频道每天 100 次
-10. **头像/图标展示**：成员 `user.avatar` 和频道 `icon` 等图片 URL 必须使用 Markdown 图片语法 `![描述](URL)` 展示，禁止作为纯文本或超链接展示
+7. **QQ频道论坛操作**仅私域机器人可用
+8. **QQ频道子频道分组**（type=4）的 `position` 必须 >= 2
+9. **QQ频道日程操作**有频率限制：单个管理员每天 10 次，单个频道每天 100 次
+10. **头像/图标展示**：QQ频道成员 `user.avatar` 和QQ频道 `icon` 等图片 URL 必须使用 Markdown 图片语法 `![描述](URL)` 展示，禁止作为纯文本或超链接展示
