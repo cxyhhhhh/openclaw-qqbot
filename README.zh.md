@@ -32,6 +32,7 @@
 | 功能 | 说明 |
 |------|------|
 | 🔒 **多场景支持** | C2C 私聊、群聊 @消息 |
+| 🌐 **双传输模式** | WebSocket（默认）或 Webhook（HTTP 回调）— 配置切换 |
 | 🖼️ **富媒体消息** | 支持图片、语音、视频、文件的收发 |
 | 🎙️ **语音能力 (STT/TTS)** | 语音转文字自动转录 & 文字转语音回复 |
 | 🔥 **一键热更新** | 私聊发送 `/bot-upgrade` 即可完成版本升级，无需登录服务器 |
@@ -403,9 +404,53 @@ openclaw message send --channel "qqbot" \
 
 #### 工作原理
 
-- 启动 `openclaw gateway` 后，所有 `enabled: true` 的账户会同时启动 WebSocket 连接
+- 启动 `openclaw gateway` 后，所有 `enabled: true` 的账户会同时启动连接（WebSocket 或 Webhook，取决于 `transport` 配置）
 - 每个账户独立维护 Token 缓存（基于 `appId` 隔离），互不干扰
 - 接收消息时，日志会带上 `[qqbot:accountId]` 前缀方便排查
+
+---
+
+### Webhook 传输模式
+
+默认情况下，插件通过 **WebSocket** 连接 QQ 平台（出站连接，无需公网 IP）。你也可以切换为 **Webhook** 模式，由 QQ 平台主动 POST 事件到你的 HTTP 端点。
+
+| | WebSocket（默认） | Webhook |
+|---|---|---|
+| 连接方式 | 插件主动连接 QQ 网关 | QQ 平台 POST 到你的服务器 |
+| 公网 IP | 不需要 | 需要 |
+| 适用场景 | 开发调试、单实例部署 | 生产环境、水平扩展、Serverless |
+| 会话恢复 | 支持 RESUME | 无状态，无需恢复 |
+| 签名验证 | 平台内置 | 插件自动 Ed25519 验签 |
+
+#### 配置方式
+
+```json
+{
+  "channels": {
+    "qqbot": {
+      "appId": "111111111",
+      "clientSecret": "your-secret",
+      "transport": "webhook",
+      "webhook": {
+        "path": "/qqbot/webhook"
+      }
+    }
+  }
+}
+```
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `transport` | `"websocket"` | `"websocket"` 或 `"webhook"` |
+| `webhook.path` | `"/qqbot/webhook"` | 接收回调的 HTTP 路径 |
+
+#### 平台配置步骤
+
+1. 登录 [QQ 开放平台](https://q.qq.com/) → 开发设置 → 消息接收方式
+2. 选择 **HTTP 回调**
+3. 填写回调 URL：`https://your-domain.com/qqbot/webhook`
+4. 平台发送 `op:13` 验证请求，插件自动处理签名验证
+5. 验证通过后，所有事件将以 POST 方式推送到该地址
 
 ---
 

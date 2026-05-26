@@ -37,6 +37,7 @@ Scan to join the QQ group chat
 | Feature | Description |
 |---------|-------------|
 | 🔒 **Multi-Scene** | C2C private chat, group @messages |
+| 🌐 **Dual Transport** | WebSocket (default) or Webhook (HTTP callback) — switch via config |
 | 🖼️ **Rich Media** | Send & receive images, voice, video, and files |
 | 🎙️ **Voice (STT/TTS)** | Speech-to-text transcription & text-to-speech replies |
 | 🔥 **One-Click Hot Upgrade** | Send `/bot-upgrade` in private chat to upgrade — no server login needed |
@@ -408,9 +409,53 @@ openclaw message send --channel "qqbot" \
 
 #### How It Works
 
-- When `openclaw gateway` starts, all accounts with `enabled: true` launch their own WebSocket connections
+- When `openclaw gateway` starts, all accounts with `enabled: true` launch their own connections (WebSocket or Webhook depending on `transport` config)
 - Each account maintains an independent Token cache (isolated by `appId`), preventing cross-contamination
 - Incoming message logs are prefixed with `[qqbot:accountId]` for easy debugging
+
+---
+
+### Webhook Transport Mode
+
+By default, the plugin connects to QQ via **WebSocket** (outbound connection, no public IP required). You can switch to **Webhook** mode where QQ platform POSTs events to your HTTP endpoint.
+
+| | WebSocket (default) | Webhook |
+|---|---|---|
+| Connection | Plugin connects to QQ gateway | QQ platform POSTs to your server |
+| Public IP | Not required | Required |
+| Use case | Development, single instance | Production, horizontal scaling, Serverless |
+| Session resume | Supported (RESUME) | Stateless, no resume needed |
+| Signature | Built-in | Ed25519 auto-verified by plugin |
+
+#### Configuration
+
+```json
+{
+  "channels": {
+    "qqbot": {
+      "appId": "111111111",
+      "clientSecret": "your-secret",
+      "transport": "webhook",
+      "webhook": {
+        "path": "/qqbot/webhook"
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `transport` | `"websocket"` | `"websocket"` or `"webhook"` |
+| `webhook.path` | `"/qqbot/webhook"` | HTTP path for receiving callbacks |
+
+#### Platform Setup
+
+1. Go to [QQ Open Platform](https://q.qq.com/) → Bot Settings → Message Receiving
+2. Select **HTTP Callback**
+3. Enter your callback URL: `https://your-domain.com/qqbot/webhook`
+4. The platform sends an `op:13` validation request — the plugin handles it automatically
+5. Once validated, all events will be POSTed to your endpoint
 
 ---
 
