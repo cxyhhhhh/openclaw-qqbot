@@ -57,6 +57,15 @@ export interface GroupConfig {
   historyLimit?: number;
 }
 
+/** 消息接收传输方式 */
+export type TransportMode = "websocket" | "webhook";
+
+/** Webhook 传输配置 */
+export interface WebhookTransportConfig {
+  /** 监听路径（默认 /qqbot/webhook） */
+  path?: string;
+}
+
 /**
  * QQ Bot 账户配置
  */
@@ -68,6 +77,10 @@ export interface QQBotAccountConfig {
   clientSecretFile?: string;
   dmPolicy?: "open" | "pairing" | "allowlist";
   allowFrom?: string[];
+  /** 消息接收传输方式：websocket（默认）| webhook */
+  transport?: TransportMode;
+  /** webhook 传输配置（transport="webhook" 时生效） */
+  webhook?: WebhookTransportConfig;
   /** 群消息策略（默认 allowlist） */
   groupPolicy?: GroupPolicy;
   /** 群白名单（groupPolicy 为 allowlist 时生效） */

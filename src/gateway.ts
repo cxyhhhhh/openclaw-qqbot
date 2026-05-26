@@ -1,8 +1,9 @@
 import WebSocket from "ws";
 import path from "node:path";
 import fs from "node:fs";
-import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent, InteractionEvent, MsgElement } from "./types.js";
+import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent, InteractionEvent, MsgElement, TransportMode } from "./types.js";
 import { MSG_TYPE_QUOTE } from "./types.js";
+import { startWebhookTransport } from "./transport/index.js";
 import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, getPluginUserAgent, sendProactiveGroupMessage, acknowledgeInteraction, getApiPluginVersion, setApiLogger } from "./api.js";
 import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
@@ -511,6 +512,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     log?.info(`[qqbot:${account.accountId}] Image server disabled (no imageServerBaseUrl configured)`);
   }
 
+  // ============ Transport 模式标记 ============
+  const transportMode: TransportMode = account.config.transport ?? "websocket";
+  if (transportMode === "webhook") {
+    log?.info(`[qqbot:${account.accountId}] Using webhook transport mode`);
+  }
+
+  // ============ WebSocket / Webhook 公共初始化 ============
   let reconnectAttempts = 0;
   let isAborted = false;
   let currentWs: WebSocket | null = null;
@@ -1868,6 +1876,88 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }); // end runWithRequestContext
       };
 
+      // ============ 统一事件分发（WebSocket/Webhook 共用） ============
+      const dispatchInboundEvent = async (t: string, d: unknown): Promise<void> => {
+        if (t === "C2C_MESSAGE_CREATE") {
+          const ev = d as C2CMessageEvent;
+          recordKnownUser({ openid: ev.author.user_openid, type: "c2c", accountId: account.accountId });
+          const refs = parseRefIndices(ev.message_scene?.ext, ev.message_type, ev.msg_elements);
+          await trySlashCommandOrEnqueue({ type: "c2c", senderId: ev.author.user_openid, content: ev.content, messageId: ev.id, timestamp: ev.timestamp, attachments: ev.attachments, refMsgIdx: refs.refMsgIdx, msgIdx: refs.msgIdx, msgElements: ev.msg_elements, msgType: ev.message_type });
+        } else if (t === "AT_MESSAGE_CREATE") {
+          const ev = d as GuildMessageEvent;
+          recordKnownUser({ openid: ev.author.id, type: "c2c", nickname: ev.author.username, accountId: account.accountId });
+          const refs = parseRefIndices((ev as any).message_scene?.ext, (ev as any).message_type, (ev as any).msg_elements);
+          await trySlashCommandOrEnqueue({ type: "guild", senderId: ev.author.id, senderName: ev.author.username, content: ev.content, messageId: ev.id, timestamp: ev.timestamp, channelId: ev.channel_id, guildId: ev.guild_id, attachments: ev.attachments, refMsgIdx: refs.refMsgIdx, msgIdx: refs.msgIdx, msgType: (ev as any).message_type });
+        } else if (t === "DIRECT_MESSAGE_CREATE") {
+          const ev = d as GuildMessageEvent;
+          recordKnownUser({ openid: ev.author.id, type: "c2c", nickname: ev.author.username, accountId: account.accountId });
+          const refs = parseRefIndices((ev as any).message_scene?.ext, (ev as any).message_type, (ev as any).msg_elements);
+          await trySlashCommandOrEnqueue({ type: "dm", senderId: ev.author.id, senderName: ev.author.username, content: ev.content, messageId: ev.id, timestamp: ev.timestamp, guildId: ev.guild_id, attachments: ev.attachments, refMsgIdx: refs.refMsgIdx, msgIdx: refs.msgIdx, msgType: (ev as any).message_type });
+        } else if (t === "GROUP_AT_MESSAGE_CREATE" || t === "GROUP_MESSAGE_CREATE") {
+          const ev = d as GroupMessageEvent;
+          recordKnownUser({ openid: ev.author.member_openid, type: "group", nickname: ev.author.username, groupOpenid: ev.group_openid, accountId: account.accountId });
+          const refs = parseRefIndices(ev.message_scene?.ext, ev.message_type, ev.msg_elements);
+          await trySlashCommandOrEnqueue({ type: "group", senderId: ev.author.member_openid, senderName: ev.author.username, senderIsBot: ev.author.bot, content: ev.content, messageId: ev.id, timestamp: ev.timestamp, groupOpenid: ev.group_openid, attachments: ev.attachments, refMsgIdx: refs.refMsgIdx, msgIdx: refs.msgIdx, eventType: t, mentions: ev.mentions, messageScene: ev.message_scene, msgElements: ev.msg_elements, msgType: ev.message_type });
+        } else if (t === "GROUP_ADD_ROBOT") {
+          const ev = d as { timestamp: string; group_openid: string; op_member_openid: string };
+          log?.info(`[qqbot:${account.accountId}] Bot added to group: ${ev.group_openid} by ${ev.op_member_openid}`);
+          recordKnownUser({ openid: ev.op_member_openid, type: "group", groupOpenid: ev.group_openid, accountId: account.accountId });
+        } else if (t === "GROUP_DEL_ROBOT") {
+          const ev = d as { timestamp: string; group_openid: string; op_member_openid: string };
+          log?.info(`[qqbot:${account.accountId}] Bot removed from group: ${ev.group_openid} by ${ev.op_member_openid}`);
+        } else if (t === "GROUP_MSG_REJECT") {
+          const ev = d as { timestamp: number; group_openid: string; op_member_openid: string };
+          log?.info(`[qqbot:${account.accountId}] Group ${ev.group_openid} rejected bot proactive messages (by ${ev.op_member_openid})`);
+        } else if (t === "GROUP_MSG_RECEIVE") {
+          const ev = d as { timestamp: number; group_openid: string; op_member_openid: string };
+          log?.info(`[qqbot:${account.accountId}] Group ${ev.group_openid} accepted bot proactive messages (by ${ev.op_member_openid})`);
+        } else if (t === "INTERACTION_CREATE") {
+          const ev = d as InteractionEvent;
+          const resolved = ev.data?.resolved;
+          const sceneDesc = ev.scene ?? (ev.chat_type === 0 ? "guild" : ev.chat_type === 1 ? "group" : "c2c");
+          log?.info(`[qqbot:${account.accountId}] Interaction: scene=${sceneDesc}, type=${ev.data?.type}, button_id=${resolved?.button_id}, button_data=${resolved?.button_data}`);
+          handleInteractionCreate({ event: ev, account, cfg, log }).catch((err) => {
+            log?.error(`[qqbot:${account.accountId}] Failed to handle interaction ${ev.id}: ${err}`);
+          });
+        }
+      };
+
+      // ============ Webhook 模式：共享 handleMessage，不走 WS ============
+      if (transportMode === "webhook") {
+        isConnecting = false;
+        msgQueue.startProcessor(handleMessage);
+        startBackgroundTokenRefresh(account.appId, account.clientSecret, {
+          log: log as { info: (msg: string) => void; error: (msg: string) => void; debug?: (msg: string) => void },
+        });
+
+        await startWebhookTransport({
+          account,
+          abortSignal,
+          onEvent: async (event) => {
+            const { eventType: t, data: d } = event;
+            log?.info(`[qqbot:${account.accountId}:webhook] 📩 Dispatch event: t=${t}, d=${JSON.stringify(d)}`);
+            await dispatchInboundEvent(t, d);
+          },
+          onReady: () => {
+            log?.info(`[qqbot:${account.accountId}:webhook] Transport ready`);
+            onReady?.({ transport: "webhook" });
+            if (_pendingFirstReady.has(account.accountId)) {
+              _pendingFirstReady.delete(account.accountId);
+              sendStartupGreetings(adminCtx, "READY");
+            }
+          },
+          onError: (error) => {
+            log?.error(`[qqbot:${account.accountId}:webhook] Error: ${error.message}`);
+            onError?.(error);
+          },
+          log,
+        });
+
+        stopBackgroundTokenRefresh();
+        unregisterApprovalHandler(account.accountId);
+        return; // webhook transport 结束，不继续 WS 逻辑
+      }
+
       ws.on("open", () => {
         log?.info(`[qqbot:${account.accountId}] WebSocket connected`);
         isConnecting = false; // 连接完成，释放锁
@@ -1990,159 +2080,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                     appId: account.appId,
                   });
                 }
-              } else if (t === "C2C_MESSAGE_CREATE") {
-                const event = d as C2CMessageEvent;
-                // P1-3: 记录已知用户
-                recordKnownUser({
-                  openid: event.author.user_openid,
-                  type: "c2c",
-                  accountId: account.accountId,
-                });
-                // 解析引用索引
-                const c2cRefs = parseRefIndices(event.message_scene?.ext, event.message_type, event.msg_elements);
-                // 斜杠指令拦截 → 不匹配则入队
-                trySlashCommandOrEnqueue({
-                  type: "c2c",
-                  senderId: event.author.user_openid,
-                  content: event.content,
-                  messageId: event.id,
-                  timestamp: event.timestamp,
-                  attachments: event.attachments,
-                  refMsgIdx: c2cRefs.refMsgIdx,
-                  msgIdx: c2cRefs.msgIdx,
-                  msgElements: event.msg_elements,
-                  msgType: event.message_type,
-                });
-              } else if (t === "AT_MESSAGE_CREATE") {
-                const event = d as GuildMessageEvent;
-                // P1-3: 记录已知用户（频道用户）
-                recordKnownUser({
-                  openid: event.author.id,
-                  type: "c2c", // 频道用户按 c2c 类型存储
-                  nickname: event.author.username,
-                  accountId: account.accountId,
-                });
-                const guildRefs = parseRefIndices((event as any).message_scene?.ext, (event as any).message_type, (event as any).msg_elements);
-                trySlashCommandOrEnqueue({
-                  type: "guild",
-                  senderId: event.author.id,
-                  senderName: event.author.username,
-                  content: event.content,
-                  messageId: event.id,
-                  timestamp: event.timestamp,
-                  channelId: event.channel_id,
-                  guildId: event.guild_id,
-                  attachments: event.attachments,
-                  refMsgIdx: guildRefs.refMsgIdx,
-                  msgIdx: guildRefs.msgIdx,
-                  msgType: (event as any).message_type,
-                });
-              } else if (t === "DIRECT_MESSAGE_CREATE") {
-                const event = d as GuildMessageEvent;
-                // P1-3: 记录已知用户（频道私信用户）
-                recordKnownUser({
-                  openid: event.author.id,
-                  type: "c2c",
-                  nickname: event.author.username,
-                  accountId: account.accountId,
-                });
-                const dmRefs = parseRefIndices((event as any).message_scene?.ext, (event as any).message_type, (event as any).msg_elements);
-                trySlashCommandOrEnqueue({
-                  type: "dm",
-                  senderId: event.author.id,
-                  senderName: event.author.username,
-                  content: event.content,
-                  messageId: event.id,
-                  timestamp: event.timestamp,
-                  guildId: event.guild_id,
-                  attachments: event.attachments,
-                  refMsgIdx: dmRefs.refMsgIdx,
-                  msgIdx: dmRefs.msgIdx,
-                  msgType: (event as any).message_type,
-                });
-              } else if (t === "GROUP_AT_MESSAGE_CREATE") {
-                const event = d as GroupMessageEvent;
-                // 被 @ 的消息，直接入队回复
-                recordKnownUser({
-                  openid: event.author.member_openid,
-                  type: "group",
-                  nickname: event.author.username,
-                  groupOpenid: event.group_openid,
-                  accountId: account.accountId,
-                });
-                const groupRefs = parseRefIndices(event.message_scene?.ext, event.message_type, event.msg_elements);
-                trySlashCommandOrEnqueue({
-                  type: "group",
-                  senderId: event.author.member_openid,
-                  senderName: event.author.username,
-                  content: event.content,
-                  messageId: event.id, 
-                  timestamp: event.timestamp,
-                  groupOpenid: event.group_openid,
-                  attachments: event.attachments,
-                  refMsgIdx: groupRefs.refMsgIdx,
-                  msgIdx: groupRefs.msgIdx,
-                  eventType: "GROUP_AT_MESSAGE_CREATE",
-                  mentions: event.mentions,
-                  messageScene: event.message_scene,
-                  msgElements: event.msg_elements,
-                  msgType: event.message_type,
-                });
-              } else if (t === "GROUP_MESSAGE_CREATE") {
-                const event = d as GroupMessageEvent;
-                recordKnownUser({
-                  openid: event.author.member_openid,
-                  type: "group",
-                  nickname: event.author.username,
-                  groupOpenid: event.group_openid,
-                  accountId: account.accountId,
-                });
-                const groupRefs = parseRefIndices(event.message_scene?.ext, event.message_type, event.msg_elements);
-                trySlashCommandOrEnqueue({
-                  type: "group",
-                  senderId: event.author.member_openid,
-                  senderName: event.author.username,
-                  senderIsBot: event.author.bot,
-                  content: event.content,
-                  messageId: event.id,
-                  timestamp: event.timestamp,
-                  groupOpenid: event.group_openid,
-                  attachments: event.attachments,
-                  refMsgIdx: groupRefs.refMsgIdx,
-                  msgIdx: groupRefs.msgIdx,
-                  eventType: "GROUP_MESSAGE_CREATE",
-                  mentions: event.mentions,
-                  messageScene: event.message_scene,
-                  msgElements: event.msg_elements,
-                  msgType: event.message_type,
-                });
-              } else if (t === "GROUP_ADD_ROBOT") {
-                const event = d as { timestamp: string; group_openid: string; op_member_openid: string };
-                log?.info(`[qqbot:${account.accountId}] Bot added to group: ${event.group_openid} by ${event.op_member_openid}`);
-                recordKnownUser({
-                  openid: event.op_member_openid,
-                  type: "group",
-                  groupOpenid: event.group_openid,
-                  accountId: account.accountId,
-                });
-
-              } else if (t === "GROUP_DEL_ROBOT") {
-                const event = d as { timestamp: string; group_openid: string; op_member_openid: string };
-                log?.info(`[qqbot:${account.accountId}] Bot removed from group: ${event.group_openid} by ${event.op_member_openid}`);
-              } else if (t === "GROUP_MSG_REJECT") {
-                const event = d as { timestamp: number; group_openid: string; op_member_openid: string };
-                log?.info(`[qqbot:${account.accountId}] Group ${event.group_openid} rejected bot proactive messages (by ${event.op_member_openid})`);
-              } else if (t === "GROUP_MSG_RECEIVE") {
-                const event = d as { timestamp: number; group_openid: string; op_member_openid: string };
-                log?.info(`[qqbot:${account.accountId}] Group ${event.group_openid} accepted bot proactive messages (by ${event.op_member_openid})`);
-              } else if (t === "INTERACTION_CREATE") {
-                const event = d as InteractionEvent;
-                const resolved = event.data?.resolved;
-                const sceneDesc = event.scene ?? (event.chat_type === 0 ? "guild" : event.chat_type === 1 ? "group" : "c2c");
-                log?.info(`[qqbot:${account.accountId}] Interaction: scene=${sceneDesc}, type=${event.data?.type}, button_id=${resolved?.button_id}, button_data=${resolved?.button_data}, user=${event.group_member_openid || event.user_openid || resolved?.user_id || "unknown"}`);
-
-                handleInteractionCreate({ event, account, cfg, log }).catch((err) => {
-                  log?.error(`[qqbot:${account.accountId}] Failed to handle interaction ${event.id}: ${err}`);
+              } else {
+                // 所有其他事件统一分发
+                dispatchInboundEvent(t!, d).catch((err) => {
+                  log?.error(`[qqbot:${account.accountId}] Event dispatch error (t=${t}): ${err}`);
                 });
               }
               break;
@@ -2302,3 +2243,4 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     abortSignal.addEventListener("abort", () => resolve());
   });
 }
+
