@@ -5,6 +5,9 @@
   "channels": ["qqbot"],
   "extensions": ["./preload.cjs"],
   "skills": ["skills/qqbot-channel", "skills/qqbot-remind", "skills/qqbot-media", "skills/qqbot-upgrade"],
+  "contracts": {
+    "tools": ["qqbot_channel_api", "qqbot_remind"]
+  },
   "capabilities": {
     "proactiveMessaging": true,
     "cronJobs": true

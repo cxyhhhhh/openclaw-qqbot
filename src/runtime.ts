@@ -1,11 +1,11 @@
 import type { PluginRuntime } from "openclaw/plugin-sdk";
-import { setOpenClawVersion } from "./api.js";
+import { setOpenClawVersion } from "./bot-instance.js";
 
 let runtime: PluginRuntime | null = null;
 
 export function setQQBotRuntime(next: PluginRuntime) {
   runtime = next;
-  // 将框架版本注入 User-Agent（runtime 注入后才能拿到准确版本）
+  // 将框架版本注入 User-Agent
   setOpenClawVersion(next.version);
 }
 

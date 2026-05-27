@@ -328,7 +328,9 @@ export async function checkSilkWasmAvailable(): Promise<boolean> {
   if (_silkWasmAvailable !== null) return _silkWasmAvailable;
 
   try {
-    const { isSilk } = await import("silk-wasm");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const silkWasm = await import("silk-wasm" as string) as any;
+    const isSilk = silkWasm.isSilk;
     // 用一个空 buffer 快速测试 WASM 是否能加载
     isSilk(new Uint8Array(0));
     _silkWasmAvailable = true;
