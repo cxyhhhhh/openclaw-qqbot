@@ -2,7 +2,7 @@
  * body-assembler 单元测试
  *
  * 锁定五层组装协议（webBody / agentBody / rawBody / systemPrompt）的输出格式，
- * 防止后续重构破坏与内置版的协议对齐。
+ * 防止后续重构破坏协议兼容性。
  *
  * 运行方式:  npx tsx tests/body-assembler.test.ts
  */

@@ -133,21 +133,22 @@ export class QQBotGateway {
       ? { ...target, msgId: opts.msgId }
       : target;
     const fileType = opts?.fileType ?? MediaFileType.IMAGE;
+    const sourceOpts = resolveMediaSource(source);
     const result = await this.bot.sendMedia({
       target: resolvedTarget,
       fileType,
-      url: source,
+      ...sourceOpts,
       content: opts?.text,
     });
     return result.message ?? { id: '', timestamp: Date.now() };
   }
 
   /**
-   * 发送语音消息（Base64 或 URL）
+   * 发送语音消息（Base64 / URL / 本地路径）
    */
   async sendVoice(
     target: ReplyTarget,
-    source: { url?: string; base64?: string },
+    source: { url?: string; base64?: string; localPath?: string },
     opts?: SendOptions,
   ): Promise<MessageResponse> {
     const resolvedTarget: ReplyTarget = opts?.msgId
@@ -159,6 +160,16 @@ export class QQBotGateway {
         target: resolvedTarget,
         fileType: MediaFileType.VOICE,
         fileData: source.base64,
+        content: opts?.text,
+      });
+      return result.message ?? { id: '', timestamp: Date.now() };
+    }
+
+    if (source.localPath) {
+      const result = await this.bot.sendMedia({
+        target: resolvedTarget,
+        fileType: MediaFileType.VOICE,
+        localPath: source.localPath,
         content: opts?.text,
       });
       return result.message ?? { id: '', timestamp: Date.now() };
@@ -184,10 +195,11 @@ export class QQBotGateway {
     const resolvedTarget: ReplyTarget = opts?.msgId
       ? { ...target, msgId: opts.msgId }
       : target;
+    const sourceOpts = resolveMediaSource(source);
     const result = await this.bot.sendMedia({
       target: resolvedTarget,
       fileType: MediaFileType.VIDEO,
-      url: source,
+      ...sourceOpts,
       content: opts?.text,
     });
     return result.message ?? { id: '', timestamp: Date.now() };
@@ -199,15 +211,17 @@ export class QQBotGateway {
   async sendFile(
     target: ReplyTarget,
     source: string,
-    opts?: SendOptions,
+    opts?: SendOptions & { fileName?: string },
   ): Promise<MessageResponse> {
     const resolvedTarget: ReplyTarget = opts?.msgId
       ? { ...target, msgId: opts.msgId }
       : target;
+    const sourceOpts = resolveMediaSource(source);
     const result = await this.bot.sendMedia({
       target: resolvedTarget,
       fileType: MediaFileType.FILE,
-      url: source,
+      ...sourceOpts,
+      fileName: opts?.fileName,
       content: opts?.text,
     });
     return result.message ?? { id: '', timestamp: Date.now() };
@@ -233,4 +247,46 @@ export class QQBotGateway {
       debug: (msg: string) => this.log.debug?.(msg),
     };
   }
+}
+
+// ── 媒体源路由：本地路径 / data URL / 远程 URL ──
+
+function resolveMediaSource(source: string): { url?: string; localPath?: string; fileData?: string } {
+  // Base64 data URL
+  if (source.startsWith('data:')) {
+    const commaIdx = source.indexOf(',');
+    if (commaIdx > 0) {
+      return { fileData: source.slice(commaIdx + 1) };
+    }
+    return { fileData: source };
+  }
+  // 远程 URL
+  if (source.startsWith('http://') || source.startsWith('https://')) {
+    return { url: source };
+  }
+  // 本地路径（支持所有常见格式）
+  // file:// 协议
+  if (source.startsWith('file://')) {
+    let p = source.slice('file://'.length);
+    if (/^\/[a-zA-Z]:[\\/]/.test(p)) p = p.slice(1);
+    try { p = decodeURIComponent(p); } catch {}
+    return { localPath: p };
+  }
+  // ~ home 路径
+  if (source === '~' || source.startsWith('~/') || source.startsWith('~\\')) {
+    const os = require('node:os');
+    return { localPath: source.replace(/^~/, os.homedir()) };
+  }
+  // Unix 绝对 / 相对 / Windows 盘符 / UNC
+  if (
+    source.startsWith('/') ||
+    source.startsWith('./') || source.startsWith('../') ||
+    source.startsWith('.\\') || source.startsWith('..\\') ||
+    /^[a-zA-Z]:[\\/]/.test(source) ||
+    source.startsWith('\\\\')
+  ) {
+    return { localPath: source };
+  }
+  // 无法判断 → 当 URL 兜底
+  return { url: source };
 }

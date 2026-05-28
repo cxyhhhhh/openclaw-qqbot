@@ -27,6 +27,8 @@ import { assembleBody } from '../dispatch/body-assembler.js';
 export interface MiddlewareSetupOptions {
   /** 获取当前运行时配置 */
   getCfg: () => Record<string, unknown>;
+  /** 获取 runtime（用于 channel.media.saveRemoteMedia 等） */
+  getRuntime?: () => any;
 }
 
 /**
@@ -75,10 +77,10 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
     limit: defaultGroup?.historyLimit ?? 50,
   }));
 
-  // 11. 附件处理（语音 STT 转录 + 图片提取）
-  bot.use(attachmentProcessor({ getCfg: opts.getCfg }));
+  // 11. 附件处理（语音 STT 转录 + 图片/文件下载）
+  bot.use(attachmentProcessor({ getCfg: opts.getCfg, getRuntime: opts.getRuntime }));
 
-  // 12. 上下文组装（构建内置版规约的 body）
+  // 12. 上下文组装（构建框架规约的 body）
   // 注入自定义 formatter，调用 assembleBody 完整组装并缓存到 ctx.state
   bot.use(envelopeFormatter({
     format: (ctx) => {

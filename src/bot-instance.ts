@@ -11,7 +11,7 @@ import { getPackageVersion } from './utils/pkg-version.js';
 
 // ── User-Agent 构建（替代原 api.ts 的 buildUserAgent / setOpenClawVersion）──
 
-const PLUGIN_VERSION = getPackageVersion(import.meta.url);
+const PLUGIN_VERSION = getPackageVersion();
 let _openclawVersion = 'unknown';
 
 export function setOpenClawVersion(version: string): void {

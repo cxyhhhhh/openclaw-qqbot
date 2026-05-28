@@ -15,8 +15,8 @@ import type { ResolvedQQBotAccount } from '../types.js';
 import type { GatewayLogSink } from '../gateway/qqbot-gateway.js';
 import { buildEnvelope } from './envelope-builder.js';
 import { assembleBody, type AssembledBody } from './body-assembler.js';
-import { sendText, sendMedia, type MediaKind } from '../outbound/outbound-service.js';
-import { extractMediaTags, hasMediaTags, type MediaTagType } from '../outbound/media-tags.js';
+import { sendText, sendMedia } from '../outbound/outbound-service.js';
+import { deliverReply, ToolMediaCollector, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
 
 /**
  * 将经过中间件处理的入站消息转发给 OpenClaw AI
@@ -63,7 +63,7 @@ export async function dispatchToOpenClaw(
   const isGroup = envelope.chatScope === 'group';
   const webBody = renderWebBody(channel, cfg, assembled, msg, isGroup);
 
-  // 构建框架标准 MsgContext（对标内置版 buildCtxPayload）
+  // 构建框架标准 MsgContext
   const ctxPayload = channel.reply?.finalizeInboundContext?.({
     Body: webBody,
     BodyForAgent: assembled.agentBody,
@@ -106,7 +106,52 @@ export async function dispatchToOpenClaw(
     CommandAuthorized: false,
   };
 
-  // 通过 turn.run 分发消息给 AI（对标内置版 outbound-dispatch.ts）
+  // 注入 MediaPaths / MediaUrls
+  const processed = ctx.state.processedAttachments as any;
+  if (processed?.localMediaPaths?.length) {
+    (ctxPayload as any).MediaPaths = processed.localMediaPaths;
+    (ctxPayload as any).MediaPath = processed.localMediaPaths[0];
+    (ctxPayload as any).MediaTypes = processed.localMediaTypes;
+    (ctxPayload as any).MediaType = processed.localMediaTypes?.[0];
+  }
+  if (processed?.remoteMediaUrls?.length) {
+    (ctxPayload as any).MediaUrls = processed.remoteMediaUrls;
+    (ctxPayload as any).MediaUrl = processed.remoteMediaUrls[0];
+  }
+
+  // Tool media 收集器（跨 deliver 调用积累）
+  const toolMedia = new ToolMediaCollector();
+
+  // TTS 能力探测（从 runtime 获取）
+  const ttsRuntime = (runtime as any)?.tts ?? channel?.runtimeContexts?.get?.('tts');
+
+  // 构建 deliver context
+  const deliverCtx: DeliverContext = {
+    qualifiedTarget,
+    accountId: account.accountId,
+    replyToId: envelope.messageId,
+    chatScope: envelope.chatScope === 'group' ? 'group' : 'direct',
+    cfg,
+    sendText: (to, text) => sendText({ to, text, accountId: account.accountId, replyToId: envelope.messageId, account }),
+    sendMedia: (to, source, opts) => sendMedia({
+      to,
+      text: opts?.text ?? '',
+      mediaUrl: source,
+      mediaKind: opts?.mediaKind,
+      accountId: account.accountId,
+      replyToId: envelope.messageId,
+      account,
+    }),
+    textToSpeech: ttsRuntime?.textToSpeech
+      ? (params) => ttsRuntime.textToSpeech(params)
+      : undefined,
+    audioFileToSilkBase64: ttsRuntime?.audioFileToSilkBase64
+      ? (audioPath: string) => ttsRuntime.audioFileToSilkBase64(audioPath)
+      : undefined,
+    log: log ? { info: log.info, error: log.error, debug: log.debug } : undefined,
+  };
+
+  // 通过 turn.run 分发消息给 AI
   await channel.turn.run({
     channel: 'qqbot',
     accountId: route.accountId,
@@ -131,84 +176,20 @@ export async function dispatchToOpenClaw(
             log?.error(`[qqbot:${account.accountId}] Session record error: ${err}`);
           },
         },
-        runDispatch: () =>
-          channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+        runDispatch: () => {
+          return channel.reply.dispatchReplyWithBufferedBlockDispatcher({
             ctx: ctxPayload,
             cfg,
             dispatcherOptions: {
-              deliver: async (payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] }, _info: { kind: string }) => {
-                const text = payload.text?.trim();
-
-                // 处理媒体标签（<qqvoice>, <qqvideo>, <qqfile> 等）
-                if (text && hasMediaTags(text)) {
-                  const { tags, cleanText } = extractMediaTags(text);
-                  // 先发送各媒体标签
-                  for (const tag of tags) {
-                    const mediaKind = mapTagToMediaKind(tag.tag);
-                    await sendMedia({
-                      to: qualifiedTarget,
-                      text: '',
-                      mediaUrl: tag.source,
-                      mediaKind,
-                      accountId: account.accountId,
-                      replyToId: envelope.messageId,
-                      account,
-                    });
-                  }
-                  // 发送剩余纯文本
-                  if (cleanText) {
-                    await sendText({
-                      to: qualifiedTarget,
-                      text: cleanText,
-                      accountId: account.accountId,
-                      replyToId: envelope.messageId,
-                      account,
-                    });
-                  }
-                  return;
-                }
-
-                if (payload.mediaUrl) {
-                  await sendMedia({
-                    to: qualifiedTarget,
-                    text: text ?? '',
-                    mediaUrl: payload.mediaUrl,
-                    accountId: account.accountId,
-                    replyToId: envelope.messageId,
-                    account,
-                  });
-                } else if (text) {
-                  await sendText({
-                    to: qualifiedTarget,
-                    text,
-                    accountId: account.accountId,
-                    replyToId: envelope.messageId,
-                    account,
-                  });
-                }
+              deliver: async (payload: DeliverPayload, info?: DeliverInfo) => {
+                await deliverReply(payload, info, deliverCtx, toolMedia);
               },
             },
-          }),
+          });
+        },
       }),
     },
   });
-}
-
-// ── 媒体标签 → MediaKind 映射 ──
-
-function mapTagToMediaKind(tag: MediaTagType): MediaKind {
-  switch (tag) {
-    case 'qqvoice':
-      return 'voice';
-    case 'qqvideo':
-      return 'video';
-    case 'qqfile':
-      return 'file';
-    case 'qqimg':
-    case 'qqmedia':
-    default:
-      return 'image';
-  }
 }
 
 // ── Web UI Body 渲染（通过 runtime 可选链，兼容所有 openclaw 版本） ──

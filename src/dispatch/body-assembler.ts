@@ -1,5 +1,5 @@
 /**
- * Body 组装器（对标内置版 openclaw/extensions/qqbot 的 inbound-pipeline）
+ * Body 组装器（消息入站 body 组装）
  *
  * SDK 中间件链已经完成了所有预处理：
  *   - ctx.message.content              ← contentSanitizer（face 解析 + mention 清洗）
@@ -8,9 +8,9 @@
  *   - ctx.state.mention                ← mentionGate
  *   - ctx.state.processedAttachments   ← attachmentProcessor（语音 STT、图片 URL）
  *
- * 本模块仅负责"按内置版协议把上述上下文拼成最终字符串"，是纯函数。
+ * 本模块仅负责"按框架协议把上述上下文拼成最终字符串"，是纯函数。
  *
- * 输出字段语义（与内置版 buildCtxPayload 对齐）：
+ * 输出字段语义（与框架 buildCtxPayload 语义一致）：
  *   - webBody    → ctxPayload.Body         （Web UI 展示）
  *   - agentBody  → ctxPayload.BodyForAgent （AI 看到的）
  *   - rawBody    → ctxPayload.RawBody / CommandBody（命令解析、审计）
@@ -25,7 +25,7 @@ import type {
 import type { ResolvedQQBotAccount } from '../types.js';
 import type { ProcessedAttachments } from '../gateway/attachment-middleware.js';
 
-// ── 协议常量（与内置版逐字对齐） ─────────────────────────────
+// ── 协议常量 ─────────────────────────────
 const QUOTE_BEGIN = '[Quoted message begins]';
 const QUOTE_END = '[Quoted message ends]';
 const HISTORY_CTX_START = '[Chat messages since your last reply — CONTEXT ONLY]';
@@ -43,7 +43,7 @@ export interface AssembledBody {
 }
 
 /**
- * 把 SDK 中间件链产出的所有上下文组装为内置版规约的 body。
+ * 把 SDK 中间件链产出的所有上下文组装为框架规约的 body。
  */
 export function assembleBody(
   ctx: MiddlewareContext,
@@ -133,7 +133,7 @@ function buildUserMessage(input: {
   return `${quotePart}${userContent}`;
 }
 
-/** Layer 4：- Images / - Voice / - ASR 元数据块（对齐内置版 classifyMedia + buildDynamicCtx） */
+/** Layer 4：- Images / - Voice / - ASR 元数据块 */
 function buildDynamicCtx(processed: ProcessedAttachments | undefined): string {
   if (!processed) return '';
   const lines: string[] = [];

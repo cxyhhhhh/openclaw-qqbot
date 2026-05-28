@@ -7,6 +7,7 @@
  * 注：此文件保留了标签别名映射和正则逻辑，是独立版独有功能。
  * SDK 本身不处理 <qqmedia> 标签（这是 OpenClaw AI 层面的约定）。
  */
+import { normalizeMediaTags } from './normalize-media-tags.js';
 
 // 标准标签名
 const VALID_TAGS = ['qqimg', 'qqvoice', 'qqvideo', 'qqfile', 'qqmedia'] as const;
@@ -57,8 +58,10 @@ export function hasMediaTags(text: string): boolean {
  * 从文本中提取所有媒体标签，返回标签列表和清除标签后的纯文本
  */
 export function extractMediaTags(text: string): { tags: ParsedMediaTag[]; cleanText: string } {
+  // 前置规范化：全角→半角、HTML 实体、自闭合→包围、别名→标准、多行清理
+  const normalized = normalizeMediaTags(text);
   const tags: ParsedMediaTag[] = [];
-  let cleanText = text;
+  let cleanText = normalized;
 
   // 匹配自闭合标签: <qqmedia file="/path" /> 或 <qqmedia>/path</qqmedia>
   const allTagNames = [...VALID_TAGS, ...Object.keys(TAG_ALIASES)].sort((a, b) => b.length - a.length);

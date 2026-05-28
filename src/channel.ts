@@ -24,7 +24,8 @@ import {
   resolveGroupConfig,
 } from './config.js';
 import { getQQBotRuntime } from './runtime.js';
-import { sendText, sendMedia } from './outbound/outbound-service.js';
+import { sendText } from './outbound/outbound-service.js';
+import { sendMedia } from './outbound/media-send.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
 import { startAccountWithCredentialRecovery, logoutAndClearCredentials } from './gateway/lifecycle.js';
 import { loadCredentialBackup } from './features/credential-backup.js';
@@ -169,9 +170,20 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       return { channel: 'qqbot' as const, messageId: result.messageId ?? '' };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, replyToId, cfg }) => {
-      const account = resolveQQBotAccount(cfg, accountId ?? undefined);
-      const result = await sendMedia({ to, text, mediaUrl: mediaUrl ?? '', accountId, replyToId, account });
-      if (result.error) throw new Error(result.error);
+      const resolvedAccountId = accountId ?? resolveDefaultQQBotAccountId(cfg);
+      const log = getQQBotRuntime()?.log;
+      const result = await sendMedia({
+        to,
+        source: mediaUrl ?? '',
+        text,
+        replyToId,
+        accountId: resolvedAccountId,
+        log: log ? { info: log.info, error: log.error, warn: log.warn, debug: log.debug } : undefined,
+      });
+      if (result.error) {
+        log?.error(`[qqbot:outbound.sendMedia] failed: ${result.error}`);
+        throw new Error(result.error);
+      }
       return { channel: 'qqbot' as const, messageId: result.messageId ?? '' };
     },
   },

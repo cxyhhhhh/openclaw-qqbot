@@ -4,6 +4,7 @@
  * 负责将 AI 回复通过 SDK 发送到 QQ。
  * 由 ChannelPlugin.outbound.sendText / sendMedia 调用。
  */
+import * as path from 'node:path';
 import { MediaFileType } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotGateway } from '../gateway/index.js';
 import type { ResolvedQQBotAccount } from '../types.js';
@@ -91,12 +92,18 @@ export async function sendMedia(params: {
     const target = parseTarget(params.to);
     const kind = params.mediaKind ?? 'image';
 
-    // 语音消息走专用方法（支持 Base64）
+    // 语音消息走专用方法（支持 本地路径 / Base64 / URL）
     if (kind === 'voice') {
-      const isBase64 = !params.mediaUrl.startsWith('http://') && !params.mediaUrl.startsWith('https://');
+      const isLocalPath = params.mediaUrl.startsWith('/') || params.mediaUrl.startsWith('./') || params.mediaUrl.startsWith('../');
+      const isUrl = params.mediaUrl.startsWith('http://') || params.mediaUrl.startsWith('https://');
+      const source = isLocalPath
+        ? { localPath: params.mediaUrl }
+        : isUrl
+          ? { url: params.mediaUrl }
+          : { base64: params.mediaUrl };
       const result = await gw.sendVoice(
         target,
-        isBase64 ? { base64: params.mediaUrl } : { url: params.mediaUrl },
+        source,
         { text: params.text, msgId: params.replyToId },
       );
       return { messageId: result.id };
@@ -202,10 +209,16 @@ export class OutboundService {
       const kind = opts?.mediaKind ?? 'image';
 
       if (kind === 'voice') {
-        const isBase64 = !source.startsWith('http://') && !source.startsWith('https://');
+        const isLocalPath = source.startsWith('/') || source.startsWith('./') || source.startsWith('../');
+        const isUrl = source.startsWith('http://') || source.startsWith('https://');
+        const voiceSource = isLocalPath
+          ? { localPath: source }
+          : isUrl
+            ? { url: source }
+            : { base64: source };
         const result = await this.gw.sendVoice(
           target,
-          isBase64 ? { base64: source } : { url: source },
+          voiceSource,
           { text: opts?.text, msgId: opts?.msgId },
         );
         return { messageId: result.id };
@@ -217,7 +230,8 @@ export class OutboundService {
       }
 
       if (kind === 'file') {
-        const result = await this.gw.sendFile(target, source, { text: opts?.text, msgId: opts?.msgId });
+        const fileName = path.basename(source);
+        const result = await this.gw.sendFile(target, source, { text: opts?.text, msgId: opts?.msgId, fileName });
         return { messageId: result.id };
       }
 

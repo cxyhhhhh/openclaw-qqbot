@@ -10,6 +10,7 @@
  */
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as crypto from 'node:crypto';
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import {
   convertSilkToWav,
@@ -18,7 +19,7 @@ import {
 import type { MessageAttachment } from '../types.js';
 import { transcribeAudio, resolveSTTConfig } from '../utils/stt.js';
 import { formatVoiceText, formatDuration, type VoiceTranscript, type TranscriptSource } from '../utils/voice-text.js';
-import { getQQBotDataDir } from '../utils/platform.js';
+import { getQQBotDataDir, getQQBotMediaDir } from '../utils/platform.js';
 
 export { formatVoiceText, formatDuration };
 export type { VoiceTranscript, TranscriptSource };
@@ -29,11 +30,19 @@ export interface ProcessedAttachments {
   imageUrls: string[];
   otherInfo: string;
   transcripts: VoiceTranscript[];
+  /** 下载到本地的媒体路径（图片 + 语音，供 AI 引用） */
+  localMediaPaths: string[];
+  /** 对应 localMediaPaths 的 MIME type */
+  localMediaTypes: string[];
+  /** 远端 URL 列表（下载失败时的回退） */
+  remoteMediaUrls: string[];
 }
 
 interface AttachmentMiddlewareOptions {
   /** 获取当前配置（延迟求值） */
   getCfg: () => Record<string, unknown>;
+  /** 获取 runtime（用于 channel.media.saveRemoteMedia） */
+  getRuntime?: () => any;
 }
 
 /**
@@ -50,9 +59,10 @@ export function attachmentProcessor(opts: AttachmentMiddlewareOptions) {
       const cfg = opts.getCfg();
       const accountId = (ctx.bot as any).accountId ?? 'default';
       const log = ctx.log;
-      const result = await processAttachments(attachments, cfg, accountId, log);
+      const runtime = opts.getRuntime?.();
+      const result = await processAttachments(attachments, cfg, accountId, log, runtime);
 
-      if (result.voiceText || result.imageUrls.length > 0 || result.otherInfo) {
+      if (result.voiceText || result.imageUrls.length > 0 || result.otherInfo || result.localMediaPaths.length > 0) {
         ctx.state.processedAttachments = result;
       }
     }
@@ -70,32 +80,74 @@ async function processAttachments(
   cfg: Record<string, unknown>,
   accountId: string,
   log?: Log,
+  runtime?: any,
 ): Promise<ProcessedAttachments> {
-  const downloadDir = ensureDir(path.join(getQQBotDataDir(accountId), 'downloads'));
+  const downloadDir = getQQBotMediaDir('downloads');
   const sttCfg = resolveSTTConfig(cfg);
   const audioPolicy = resolveAudioPolicy(cfg);
+  const mediaSaver = runtime?.channel?.media?.saveRemoteMedia;
 
   const imageUrls: string[] = [];
   const otherParts: string[] = [];
   const transcripts: VoiceTranscript[] = [];
+  const localMediaPaths: string[] = [];
+  const localMediaTypes: string[] = [];
+  const remoteMediaUrls: string[] = [];
 
-  for (const att of attachments) {
+  // 并行下载所有附件
+  const tasks = attachments.map(async (att) => {
     const isVoice = isVoiceAttachment(att);
     const isImage = att.content_type?.startsWith('image/');
+    const url = normalizeUrl(att.url);
 
-    if (isImage) {
-      const url = normalizeUrl(att.url);
-      if (url) imageUrls.push(url);
-      continue;
+    if (isImage && url) {
+      const localPath = await downloadMediaFile(url, downloadDir, att.filename, mediaSaver, log);
+      return { type: 'image' as const, localPath, url, contentType: att.content_type ?? 'image/png' };
     }
 
     if (isVoice) {
       const transcript = await processVoiceAttachment(att, sttCfg, audioPolicy, downloadDir, log);
-      transcripts.push(transcript);
-      continue;
+      return { type: 'voice' as const, transcript };
     }
 
-    otherParts.push(`[Attachment: ${att.filename ?? att.content_type}]`);
+    // other 类型也尝试下载
+    if (url) {
+      const localPath = await downloadMediaFile(url, downloadDir, att.filename, mediaSaver, log);
+      return { type: 'other' as const, localPath, url, filename: att.filename ?? att.content_type };
+    }
+    return { type: 'other' as const, localPath: null, url: '', filename: att.filename ?? att.content_type };
+  });
+
+  const results = await Promise.all(tasks);
+
+  // 按原始顺序收集结果
+  for (const result of results) {
+    if (result.type === 'image') {
+      if (result.localPath) {
+        imageUrls.push(result.localPath);
+        localMediaPaths.push(result.localPath);
+        localMediaTypes.push(result.contentType);
+      } else {
+        imageUrls.push(result.url);
+        remoteMediaUrls.push(result.url);
+      }
+    } else if (result.type === 'voice') {
+      transcripts.push(result.transcript);
+      if (result.transcript.localPath) {
+        localMediaPaths.push(result.transcript.localPath);
+        localMediaTypes.push('audio/wav');
+      } else if (result.transcript.remoteUrl) {
+        remoteMediaUrls.push(result.transcript.remoteUrl);
+      }
+    } else if (result.type === 'other') {
+      if (result.localPath) {
+        otherParts.push(`[Attachment: ${result.localPath}]`);
+        localMediaPaths.push(result.localPath);
+        localMediaTypes.push('application/octet-stream');
+      } else {
+        otherParts.push(`[Attachment: ${result.filename}]`);
+      }
+    }
   }
 
   return {
@@ -103,6 +155,9 @@ async function processAttachments(
     imageUrls,
     otherInfo: otherParts.join('\n'),
     transcripts,
+    localMediaPaths,
+    localMediaTypes,
+    remoteMediaUrls,
   };
 }
 
@@ -139,7 +194,7 @@ async function processVoiceAttachment(
   try {
     const wavUrl = normalizeUrl(att.voice_wav_url);
     if (wavUrl) {
-      const downloaded = await downloadFile(wavUrl, downloadDir);
+      const downloaded = await downloadMediaFile(wavUrl, downloadDir, undefined, undefined, log);
       if (downloaded) {
         localPath = downloaded;
         log?.debug?.(`Voice: downloaded WAV from voice_wav_url`);
@@ -149,7 +204,7 @@ async function processVoiceAttachment(
     if (!localPath) {
       const silkUrl = normalizeUrl(att.url);
       if (silkUrl) {
-        const silkPath = await downloadFile(silkUrl, downloadDir, att.filename);
+        const silkPath = await downloadMediaFile(silkUrl, downloadDir, att.filename, undefined, log);
         if (silkPath) {
           const ext = path.extname(silkPath).toLowerCase();
           if (audioPolicy.sttDirectFormats.includes(ext)) {
@@ -246,20 +301,59 @@ function ensureDir(dir: string): string {
   return dir;
 }
 
-async function downloadFile(url: string, dir: string, filename?: string): Promise<string | null> {
+async function downloadMediaFile(
+  url: string,
+  dir: string,
+  filename?: string,
+  mediaSaver?: (opts: { url: string; subdir?: string; originalFilename?: string }) => Promise<{ filePath: string } | null>,
+  log?: Log,
+): Promise<string | null> {
+  // 仅允许 HTTPS（安全策略）
+  if (!url.startsWith('https://')) {
+    log?.debug?.(`Skipping non-HTTPS URL: ${url.slice(0, 80)}`);
+    return null;
+  }
+
+  // 优先使用框架 saveRemoteMedia（自带 SSRF 防护、重试、大小限制）
+  if (mediaSaver) {
+    try {
+      const result = await mediaSaver({ url, subdir: 'qqbot-inbound', originalFilename: filename });
+      if (result?.filePath) {
+        log?.debug?.(`Downloaded via runtime: ${result.filePath}`);
+        return result.filePath;
+      }
+    } catch (err) {
+      log?.error(`runtime.media.saveRemoteMedia failed: ${err instanceof Error ? err.message : String(err)}`);
+      // fallback 到直接 fetch
+    }
+  }
+
+  // Fallback：直接 fetch（runtime 不可用时）
   try {
-    const resp = await fetch(url);
-    if (!resp.ok) return null;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    if (!resp.ok) {
+      log?.debug?.(`Download HTTP ${resp.status}: ${url.slice(0, 80)}`);
+      return null;
+    }
     const buffer = Buffer.from(await resp.arrayBuffer());
+
+    // 命名格式: {base}_{timestamp}_{randomHex}{ext}
     const ext = filename ? path.extname(filename) : guessExtFromUrl(url);
-    const name = `voice_${Date.now()}${ext || '.bin'}`;
-    const filePath = path.join(dir, name);
+    const base = filename ? path.basename(filename, path.extname(filename)) : 'download';
+    const ts = Date.now();
+    const rand = crypto.randomBytes(3).toString('hex');
+    const safeFilename = `${base || 'file'}_${ts}_${rand}${ext || '.bin'}`;
+    const filePath = path.join(dir, safeFilename);
     fs.writeFileSync(filePath, buffer);
+    log?.debug?.(`Downloaded: ${filePath}`);
     return filePath;
-  } catch {
+  } catch (err) {
+    log?.error(`Download failed: ${url.slice(0, 80)} — ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
+
+
 
 function guessExtFromUrl(url: string): string {
   try {

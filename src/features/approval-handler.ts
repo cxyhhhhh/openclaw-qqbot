@@ -19,8 +19,9 @@ import type { InlineKeyboard, KeyboardButton } from "../types.js";
 // ─── 动态加载 gateway-runtime（兼容不同安装环境） ────────
 
 function loadGatewayRuntime(): { createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<GatewayClient> } {
-  const req = createRequire(import.meta.url);
-  const currentFile = fileURLToPath(import.meta.url);
+  // tsup CJS bundle 中 __filename 由构建工具注入
+  const currentFile = __filename;
+  const req = createRequire(currentFile);
   const pluginRoot = path.resolve(path.dirname(currentFile), "..", "..");
   const fs = req("node:fs") as typeof import("node:fs");
 
