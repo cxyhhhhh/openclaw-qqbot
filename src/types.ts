@@ -128,6 +128,11 @@ export interface QQBotAccountConfig {
    * 注意：仅 C2C（私聊）支持流式消息 API。
    */
   streaming?: boolean;
+  /**
+   * STT (语音转文字) 配置
+   * 配置后，收到语音消息时会自动调用 STT 服务转录为文字
+   */
+  stt?: STTChannelConfig;
 }
 
 /**
@@ -179,6 +184,22 @@ export interface AudioFormatPolicy {
    * 当禁用时，非原生格式的音频会 fallback 到 sendDocument（文件发送）
    */
   transcodeEnabled?: boolean;
+}
+
+/**
+ * STT (语音转文字) 配置
+ */
+export interface STTChannelConfig {
+  /** 是否启用 STT（默认 true，配置了 baseUrl+apiKey 即自动启用） */
+  enabled?: boolean;
+  /** STT 服务提供商 ID（对应 models.providers 中的 key，默认 "openai"） */
+  provider?: string;
+  /** STT API 地址（如 https://api.openai.com/v1） */
+  baseUrl?: string;
+  /** STT API 密钥 */
+  apiKey?: string;
+  /** STT 模型名称（默认 "whisper-1"） */
+  model?: string;
 }
 
 /**

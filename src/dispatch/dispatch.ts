@@ -14,7 +14,9 @@ import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import type { ResolvedQQBotAccount } from '../types.js';
 import type { GatewayLogSink } from '../gateway/qqbot-gateway.js';
 import { buildEnvelope } from './envelope-builder.js';
-import { sendText, sendMedia } from '../outbound/outbound-service.js';
+import { assembleBody, type AssembledBody } from './body-assembler.js';
+import { sendText, sendMedia, type MediaKind } from '../outbound/outbound-service.js';
+import { extractMediaTags, hasMediaTags, type MediaTagType } from '../outbound/media-tags.js';
 
 /**
  * 将经过中间件处理的入站消息转发给 OpenClaw AI
@@ -27,6 +29,12 @@ export async function dispatchToOpenClaw(
   log?: GatewayLogSink,
 ): Promise<void> {
   const envelope = buildEnvelope(ctx, msg, account);
+
+  // 优先使用 envelopeFormatter 中间件缓存的组装结果，fallback 即时组装
+  const assembled: AssembledBody =
+    ((ctx.state as Record<string, unknown>).assembledBody as AssembledBody | undefined) ??
+    assembleBody(ctx, msg, account);
+
   const channel = runtime.channel as any;
 
   if (!channel?.turn?.run) {
@@ -51,18 +59,22 @@ export async function dispatchToOpenClaw(
   const agentId = route.agentId ?? 'default';
   const storePath = channel.session?.resolveStorePath?.((cfg as any)?.session?.store, { agentId }) ?? '';
 
+  // Web UI Body：通过 runtime 渲染（低版本 openclaw 降级为 userContent）
+  const isGroup = envelope.chatScope === 'group';
+  const webBody = renderWebBody(channel, cfg, assembled, msg, isGroup);
+
   // 构建框架标准 MsgContext（对标内置版 buildCtxPayload）
   const ctxPayload = channel.reply?.finalizeInboundContext?.({
-    Body: envelope.content,
-    BodyForAgent: envelope.content,
-    RawBody: envelope.content,
-    CommandBody: envelope.content,
+    Body: webBody,
+    BodyForAgent: assembled.agentBody,
+    RawBody: assembled.rawBody,
+    CommandBody: assembled.rawBody,
     From: envelope.targetId,
     To: envelope.targetId,
     SessionKey: route.sessionKey,
     AccountId: route.accountId,
     ChatType: envelope.chatScope === 'group' ? 'group' : 'direct',
-    GroupSystemPrompt: envelope.systemPrompt,
+    GroupSystemPrompt: assembled.systemPrompt,
     SenderId: envelope.senderId,
     SenderName: envelope.senderName,
     Provider: 'qqbot',
@@ -73,16 +85,16 @@ export async function dispatchToOpenClaw(
     OriginatingTo: envelope.targetId,
     CommandAuthorized: false,
   }) ?? {
-    Body: envelope.content,
-    BodyForAgent: envelope.content,
-    RawBody: envelope.content,
-    CommandBody: envelope.content,
+    Body: webBody,
+    BodyForAgent: assembled.agentBody,
+    RawBody: assembled.rawBody,
+    CommandBody: assembled.rawBody,
     From: envelope.targetId,
     To: envelope.targetId,
     SessionKey: route.sessionKey,
     AccountId: route.accountId,
     ChatType: envelope.chatScope === 'group' ? 'group' : 'direct',
-    GroupSystemPrompt: envelope.systemPrompt,
+    GroupSystemPrompt: assembled.systemPrompt,
     SenderId: envelope.senderId,
     SenderName: envelope.senderName,
     Provider: 'qqbot',
@@ -102,9 +114,9 @@ export async function dispatchToOpenClaw(
     adapter: {
       ingest: () => ({
         id: envelope.messageId,
-        rawText: envelope.content,
-        textForAgent: envelope.content,
-        textForCommands: envelope.content,
+        rawText: assembled.rawBody,
+        textForAgent: assembled.agentBody,
+        textForCommands: assembled.rawBody,
         raw: envelope,
       }),
       resolveTurn: () => ({
@@ -126,6 +138,36 @@ export async function dispatchToOpenClaw(
             dispatcherOptions: {
               deliver: async (payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] }, _info: { kind: string }) => {
                 const text = payload.text?.trim();
+
+                // 处理媒体标签（<qqvoice>, <qqvideo>, <qqfile> 等）
+                if (text && hasMediaTags(text)) {
+                  const { tags, cleanText } = extractMediaTags(text);
+                  // 先发送各媒体标签
+                  for (const tag of tags) {
+                    const mediaKind = mapTagToMediaKind(tag.tag);
+                    await sendMedia({
+                      to: qualifiedTarget,
+                      text: '',
+                      mediaUrl: tag.source,
+                      mediaKind,
+                      accountId: account.accountId,
+                      replyToId: envelope.messageId,
+                      account,
+                    });
+                  }
+                  // 发送剩余纯文本
+                  if (cleanText) {
+                    await sendText({
+                      to: qualifiedTarget,
+                      text: cleanText,
+                      accountId: account.accountId,
+                      replyToId: envelope.messageId,
+                      account,
+                    });
+                  }
+                  return;
+                }
+
                 if (payload.mediaUrl) {
                   await sendMedia({
                     to: qualifiedTarget,
@@ -150,4 +192,61 @@ export async function dispatchToOpenClaw(
       }),
     },
   });
+}
+
+// ── 媒体标签 → MediaKind 映射 ──
+
+function mapTagToMediaKind(tag: MediaTagType): MediaKind {
+  switch (tag) {
+    case 'qqvoice':
+      return 'voice';
+    case 'qqvideo':
+      return 'video';
+    case 'qqfile':
+      return 'file';
+    case 'qqimg':
+    case 'qqmedia':
+    default:
+      return 'image';
+  }
+}
+
+// ── Web UI Body 渲染（通过 runtime 可选链，兼容所有 openclaw 版本） ──
+
+function renderWebBody(
+  channel: any,
+  cfg: unknown,
+  assembled: AssembledBody,
+  msg: QQBotInboundMessage,
+  isGroup: boolean,
+): string {
+  const reply = channel?.reply;
+  if (!reply?.formatInboundEnvelope) {
+    return assembled.webBody;
+  }
+  try {
+    const envelopeOpts = reply.resolveEnvelopeFormatOptions?.(cfg);
+    return reply.formatInboundEnvelope({
+      channel: 'qqbot',
+      from: msg.senderName ?? msg.senderId,
+      timestamp: parseTimestamp(msg.timestamp),
+      body: assembled.webBody,
+      chatType: isGroup ? 'group' : 'direct',
+      sender: { id: msg.senderId, name: msg.senderName },
+      envelope: envelopeOpts,
+    });
+  } catch {
+    return assembled.webBody;
+  }
+}
+
+function parseTimestamp(ts: string | number | undefined): number {
+  if (typeof ts === 'number') return ts;
+  if (typeof ts === 'string') {
+    const n = Number(ts);
+    if (!Number.isNaN(n)) return n;
+    const d = new Date(ts).getTime();
+    if (!Number.isNaN(d)) return d;
+  }
+  return Date.now();
 }

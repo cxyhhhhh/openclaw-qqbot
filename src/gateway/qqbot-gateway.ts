@@ -65,7 +65,9 @@ export class QQBotGateway {
     });
 
     // 编排中间件（仅过滤 + 富化，不含业务转发）
-    setupMiddlewares(this.bot, account);
+    setupMiddlewares(this.bot, account, {
+      getCfg: () => (runtime.config as any)?.current?.() ?? {},
+    });
   }
 
   /**
@@ -125,6 +127,58 @@ export class QQBotGateway {
   async sendMedia(
     target: ReplyTarget,
     source: string,
+    opts?: SendOptions & { fileType?: MediaFileType },
+  ): Promise<MessageResponse> {
+    const resolvedTarget: ReplyTarget = opts?.msgId
+      ? { ...target, msgId: opts.msgId }
+      : target;
+    const fileType = opts?.fileType ?? MediaFileType.IMAGE;
+    const result = await this.bot.sendMedia({
+      target: resolvedTarget,
+      fileType,
+      url: source,
+      content: opts?.text,
+    });
+    return result.message ?? { id: '', timestamp: Date.now() };
+  }
+
+  /**
+   * 发送语音消息（Base64 或 URL）
+   */
+  async sendVoice(
+    target: ReplyTarget,
+    source: { url?: string; base64?: string },
+    opts?: SendOptions,
+  ): Promise<MessageResponse> {
+    const resolvedTarget: ReplyTarget = opts?.msgId
+      ? { ...target, msgId: opts.msgId }
+      : target;
+
+    if (source.base64) {
+      const result = await this.bot.sendMedia({
+        target: resolvedTarget,
+        fileType: MediaFileType.VOICE,
+        fileData: source.base64,
+        content: opts?.text,
+      });
+      return result.message ?? { id: '', timestamp: Date.now() };
+    }
+
+    const result = await this.bot.sendMedia({
+      target: resolvedTarget,
+      fileType: MediaFileType.VOICE,
+      url: source.url!,
+      content: opts?.text,
+    });
+    return result.message ?? { id: '', timestamp: Date.now() };
+  }
+
+  /**
+   * 发送视频消息
+   */
+  async sendVideo(
+    target: ReplyTarget,
+    source: string,
     opts?: SendOptions,
   ): Promise<MessageResponse> {
     const resolvedTarget: ReplyTarget = opts?.msgId
@@ -132,7 +186,27 @@ export class QQBotGateway {
       : target;
     const result = await this.bot.sendMedia({
       target: resolvedTarget,
-      fileType: MediaFileType.IMAGE,
+      fileType: MediaFileType.VIDEO,
+      url: source,
+      content: opts?.text,
+    });
+    return result.message ?? { id: '', timestamp: Date.now() };
+  }
+
+  /**
+   * 发送文件消息
+   */
+  async sendFile(
+    target: ReplyTarget,
+    source: string,
+    opts?: SendOptions,
+  ): Promise<MessageResponse> {
+    const resolvedTarget: ReplyTarget = opts?.msgId
+      ? { ...target, msgId: opts.msgId }
+      : target;
+    const result = await this.bot.sendMedia({
+      target: resolvedTarget,
+      fileType: MediaFileType.FILE,
       url: source,
       content: opts?.text,
     });
@@ -156,9 +230,7 @@ export class QQBotGateway {
       info: (msg: string) => this.log.info(msg),
       error: (msg: string) => this.log.error(msg),
       warn: (msg: string) => this.log.warn(msg),
-      debug: (msg: string) => {
-        if (process.env.QQBOT_DEBUG) this.log.debug?.(msg);
-      },
+      debug: (msg: string) => this.log.debug?.(msg),
     };
   }
 }

@@ -1,3 +1,4 @@
+import { getLogger } from "../runtime.js";
 /**
  * QQ Bot 主动发送消息模块
  * 
@@ -122,7 +123,7 @@ function loadKnownUsers(): Map<string, KnownUser> {
       cacheLastModified = fs.statSync(KNOWN_USERS_FILE).mtimeMs;
     }
   } catch (err) {
-    console.error(`[qqbot:proactive] Failed to load known users: ${err}`);
+    getLogger().error(`[qqbot:proactive] Failed to load known users: ${err}`);
   }
 
   knownUsersCache = users;
@@ -140,7 +141,7 @@ function saveKnownUsers(users: Map<string, KnownUser>): void {
     cacheLastModified = Date.now();
     knownUsersCache = users;
   } catch (err) {
-    console.error(`[qqbot:proactive] Failed to save known users: ${err}`);
+    getLogger().error(`[qqbot:proactive] Failed to save known users: ${err}`);
   }
 }
 
@@ -165,7 +166,7 @@ export function recordKnownUser(user: Omit<KnownUser, "firstInteractionAt">): vo
   });
   
   saveKnownUsers(users);
-  console.log(`[qqbot:proactive] Recorded user: ${key}`);
+  getLogger().info(`[qqbot:proactive] Recorded user: ${key}`);
 }
 
 /**
@@ -316,9 +317,9 @@ export async function sendProactive(
     if (imageUrl) {
       try {
         await bot.sendImage(target, { url: imageUrl });
-        console.log(`[qqbot:proactive] Sent image to ${type}:${to}`);
+        getLogger().info(`[qqbot:proactive] Sent image to ${type}:${to}`);
       } catch (err) {
-        console.error(`[qqbot:proactive] Failed to send image: ${err}`);
+        getLogger().error(`[qqbot:proactive] Failed to send image: ${err}`);
       }
     }
     
@@ -331,7 +332,7 @@ export async function sendProactive(
     }
 
     const result = await bot.sendText(target, text);
-    console.log(`[qqbot:proactive] Sent message to ${type}:${to}, id: ${result.id}`);
+    getLogger().info(`[qqbot:proactive] Sent message to ${type}:${to}, id: ${result.id}`);
     
     return {
       success: true,
@@ -340,7 +341,7 @@ export async function sendProactive(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[qqbot:proactive] Failed to send message: ${message}`);
+    getLogger().error(`[qqbot:proactive] Failed to send message: ${message}`);
     
     return {
       success: false,

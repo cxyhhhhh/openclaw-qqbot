@@ -4,11 +4,15 @@
  * 处理 SDK 的 message / interaction 事件：
  * - message: 中间件处理完毕后，将消息转发到 OpenClaw AI
  * - interaction: 路由到审批处理器
+ *
+ * 注：附件处理（语音 STT、图片提取）已通过 attachmentProcessor 中间件完成，
+ * 转录结果在 ctx.state.processedAttachments 中，由 envelope-builder 消费。
  */
 import type { MiddlewareContext, QQBotInboundMessage, InteractionEvent } from '@tencent-connect/qqbot-nodejs';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import type { ResolvedQQBotAccount } from '../types.js';
 import type { GatewayLogSink } from './qqbot-gateway.js';
+import { getLogger } from '../runtime.js';
 import { dispatchToOpenClaw } from '../dispatch/index.js';
 import { runWithRequestContext } from '../request-context.js';
 import { getApprovalHandler } from '../features/approval-handler.js';
@@ -46,7 +50,12 @@ export async function handleMessage(
   }
 
   await runWithRequestContext(
-    { target: targetId, accountId: account.accountId },
+    {
+      target: targetId,
+      accountId: account.accountId,
+      messageId: msg.messageId,
+      openId: msg.senderId,
+    },
     () => dispatchToOpenClaw(ctx, msg, account, runtime, log),
   );
 }
@@ -84,6 +93,6 @@ export async function handleInteraction(
   try {
     await handler.resolveApproval(approvalId, decision);
   } catch (err) {
-    console.error(`[qqbot:${account.accountId}] Approval resolve error:`, err);
+    getLogger().error(`[qqbot:${account.accountId}] Approval resolve error: ${err}`);
   }
 }

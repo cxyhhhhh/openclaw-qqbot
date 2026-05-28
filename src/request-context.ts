@@ -13,6 +13,10 @@ export interface RequestContext {
   target: string;
   /** 当前请求的 QQBot 账户 ID（多账户场景） */
   accountId?: string;
+  /** 当前消息 ID */
+  messageId?: string;
+  /** 发送者 open_id */
+  openId?: string;
 }
 
 const asyncLocalStorage = new AsyncLocalStorage<RequestContext>();

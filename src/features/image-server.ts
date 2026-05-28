@@ -3,6 +3,7 @@
  * 提供安全的图片存储和访问服务
  */
 
+import { getLogger } from "../runtime.js";
 import http from "node:http";
 import fs from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -349,34 +350,34 @@ export function saveImage(
  */
 export function saveImageFromPath(filePath: string, ttlSeconds?: number): string | null {
   try {
-    console.log(`[image-server] saveImageFromPath: ${filePath}`);
+    getLogger().info(`[image-server] saveImageFromPath: ${filePath}`);
     
     // 检查文件是否存在
     if (!fs.existsSync(filePath)) {
-      console.log(`[image-server] File not found: ${filePath}`);
+      getLogger().info(`[image-server] File not found: ${filePath}`);
       return null;
     }
 
     // 读取文件
     const buffer = fs.readFileSync(filePath);
-    console.log(`[image-server] File size: ${buffer.length}`);
+    getLogger().info(`[image-server] File size: ${buffer.length}`);
     
     // 根据扩展名获取 MIME 类型
     const ext = path.extname(filePath).toLowerCase().replace(".", "");
-    console.log(`[image-server] Extension: "${ext}"`);
+    getLogger().info(`[image-server] Extension: "${ext}"`);
     const mimeType = getMimeType(ext);
-    console.log(`[image-server] MIME type: ${mimeType}`);
+    getLogger().info(`[image-server] MIME type: ${mimeType}`);
     
     // 只处理图片文件
     if (!mimeType.startsWith("image/")) {
-      console.log(`[image-server] Not an image file`);
+      getLogger().info(`[image-server] Not an image file`);
       return null;
     }
 
     // 使用 saveImage 保存
     return saveImage(buffer, mimeType, ttlSeconds);
   } catch (err) {
-    console.error(`[image-server] saveImageFromPath error:`, err);
+    getLogger().error(`[image-server] saveImageFromPath error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -408,10 +409,10 @@ export async function ensureImageServer(publicBaseUrl?: string): Promise<string 
       ttlSeconds: 3600, // 1 小时过期
     };
     await startImageServer(config);
-    console.log(`[image-server] Auto-started on port ${config.port}, baseUrl: ${config.baseUrl}`);
+    getLogger().info(`[image-server] Auto-started on port ${config.port}, baseUrl: ${config.baseUrl}`);
     return config.baseUrl!;
   } catch (err) {
-    console.error(`[image-server] Failed to auto-start: ${err}`);
+    getLogger().error(`[image-server] Failed to auto-start: ${err}`);
     return null;
   }
 }
@@ -467,7 +468,7 @@ export async function downloadFile(
     await validateRemoteUrl(url);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[image-server] SSRF check failed: ${msg}`);
+    getLogger().error(`[image-server] SSRF check failed: ${msg}`);
     return { filePath: null, error: `URL 安全检查未通过: ${msg}` };
   }
 
@@ -482,7 +483,7 @@ export async function downloadFile(
     if (attempt > 0) {
       // 指数退避：1s, 2s
       const delayMs = attempt * 1000;
-      console.log(`[image-server] Retry ${attempt}/${maxRetries} after ${delayMs}ms: ${url.slice(0, 120)}`);
+      getLogger().info(`[image-server] Retry ${attempt}/${maxRetries} after ${delayMs}ms: ${url.slice(0, 120)}`);
       await new Promise(r => setTimeout(r, delayMs));
     }
 
@@ -495,7 +496,7 @@ export async function downloadFile(
 
     // 可重试的错误，记录后继续
     lastError = { filePath: null, error: result.error };
-    console.error(`[image-server] Attempt ${attempt + 1}/${maxRetries + 1} failed (retryable): ${result.error}`);
+    getLogger().error(`[image-server] Attempt ${attempt + 1}/${maxRetries + 1} failed (retryable): ${result.error}`);
   }
 
   // 所有重试用完
@@ -533,14 +534,14 @@ async function downloadFileOnce(
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
       const reason = `HTTP ${response.status} ${response.statusText}`;
-      console.error(`[image-server] Download failed: ${reason}`);
+      getLogger().error(`[image-server] Download failed: ${reason}`);
       // 5xx 服务端错误可重试，4xx 不可重试
       const retryable = response.status >= 500;
       return { filePath: null, error: `下载失败 (${reason})`, retryable };
     }
 
     if (!response.body) {
-      console.error(`[image-server] Download failed: empty response body`);
+      getLogger().error(`[image-server] Download failed: empty response body`);
       return { filePath: null, error: `下载失败 (响应体为空)`, retryable: false };
     }
 
@@ -550,7 +551,7 @@ async function downloadFileOnce(
       if (contentLength > 0 && contentLength > maxSizeBytes) {
         const sizeMB = (contentLength / (1024 * 1024)).toFixed(1);
         const limitMB = Math.round(maxSizeBytes / (1024 * 1024));
-        console.error(`[image-server] File too large (Content-Length: ${sizeMB}MB, limit: ${limitMB}MB): ${url}`);
+        getLogger().error(`[image-server] File too large (Content-Length: ${sizeMB}MB, limit: ${limitMB}MB): ${url}`);
         return { filePath: null, error: `文件过大（${sizeMB}MB），超过了${limitMB}M的下载限制`, retryable: false };
       }
     }
@@ -612,7 +613,7 @@ async function downloadFileOnce(
     fs.renameSync(tempPath, filePath);
     tempPath = null; // 重命名成功，不再需要清理
 
-    console.log(`[image-server] Downloaded file: ${filePath} (${stat.size} bytes)`);
+    getLogger().info(`[image-server] Downloaded file: ${filePath} (${stat.size} bytes)`);
     return { filePath };
   } catch (err) {
     // 清理不完整的临时文件
@@ -621,19 +622,19 @@ async function downloadFileOnce(
     }
 
     if (err instanceof Error && err.name === "AbortError") {
-      console.error(`[image-server] Download timeout after ${timeoutMs}ms: ${url}`);
+      getLogger().error(`[image-server] Download timeout after ${timeoutMs}ms: ${url}`);
       return { filePath: null, error: `下载超时（${Math.round(timeoutMs / 1000)}秒）`, retryable: true };
     }
     // 大小超限错误 — 不可重试
     if (err instanceof Error && err.message.startsWith("DOWNLOAD_SIZE_EXCEEDED:")) {
       const limitMB = maxSizeBytes > 0 ? Math.round(maxSizeBytes / (1024 * 1024)) : 0;
-      console.error(`[image-server] Download size exceeded ${limitMB}MB: ${url}`);
+      getLogger().error(`[image-server] Download size exceeded ${limitMB}MB: ${url}`);
       return { filePath: null, error: `文件过大，超过了${limitMB}M的下载限制`, retryable: false };
     }
     // 网络层临时错误 — 可重试
     const retryable = isRetryableNetworkError(err);
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[image-server] Download error (retryable=${retryable}):`, err);
+    getLogger().error(`[image-server] Download error (retryable=${retryable}): ${msg}`);
     return { filePath: null, error: `下载出错: ${msg}`, retryable };
   } finally {
     if (timeoutId) clearTimeout(timeoutId);

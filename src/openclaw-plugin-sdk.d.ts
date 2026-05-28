@@ -87,15 +87,31 @@ declare module "openclaw/plugin-sdk" {
     /** Channel 接口 - 使用 any 类型以兼容 SDK 内部复杂类型 */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     channel?: any;
-    /** 日志函数 */
+    /** 日志函数（旧版，建议使用 logging.getChildLogger） */
     log: {
       info: (message: string, ...args: unknown[]) => void;
       warn: (message: string, ...args: unknown[]) => void;
       error: (message: string, ...args: unknown[]) => void;
       debug: (message: string, ...args: unknown[]) => void;
     };
+    /** 结构化日志（框架自动追加 channel 前缀） */
+    logging: {
+      shouldLogVerbose: () => boolean;
+      getChildLogger: (
+        bindings?: Record<string, unknown>,
+        opts?: { level?: string },
+      ) => RuntimeLogger;
+    };
     /** 其他运行时方法 */
     [key: string]: unknown;
+  }
+
+  /** 结构化日志器 */
+  export interface RuntimeLogger {
+    debug?: (message: string, meta?: Record<string, unknown>) => void;
+    info: (message: string, meta?: Record<string, unknown>) => void;
+    warn: (message: string, meta?: Record<string, unknown>) => void;
+    error: (message: string, meta?: Record<string, unknown>) => void;
   }
 
   // ============ 插件 API ============

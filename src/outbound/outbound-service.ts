@@ -4,6 +4,7 @@
  * 负责将 AI 回复通过 SDK 发送到 QQ。
  * 由 ChannelPlugin.outbound.sendText / sendMedia 调用。
  */
+import { MediaFileType } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotGateway } from '../gateway/index.js';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { parseTarget } from './target.js';
@@ -23,6 +24,17 @@ export function unregisterGateway(accountId: string): void {
 export function getGateway(accountId: string): QQBotGateway | undefined {
   return gateways.get(accountId);
 }
+
+// ── 媒体类型映射 ──
+
+export type MediaKind = 'image' | 'voice' | 'video' | 'file';
+
+const MEDIA_KIND_TO_FILE_TYPE: Record<MediaKind, MediaFileType> = {
+  image: MediaFileType.IMAGE,
+  voice: MediaFileType.VOICE,
+  video: MediaFileType.VIDEO,
+  file: MediaFileType.FILE,
+};
 
 // ── 出站公开 API ──
 
@@ -59,11 +71,13 @@ export async function sendText(params: {
 
 /**
  * ChannelPlugin.outbound.sendMedia 实现
+ * 支持 mediaKind 参数区分 image/voice/video/file
  */
 export async function sendMedia(params: {
   to: string;
   text?: string;
   mediaUrl: string;
+  mediaKind?: MediaKind;
   accountId?: string;
   replyToId?: string;
   account: ResolvedQQBotAccount;
@@ -75,10 +89,92 @@ export async function sendMedia(params: {
 
   try {
     const target = parseTarget(params.to);
+    const kind = params.mediaKind ?? 'image';
+
+    // 语音消息走专用方法（支持 Base64）
+    if (kind === 'voice') {
+      const isBase64 = !params.mediaUrl.startsWith('http://') && !params.mediaUrl.startsWith('https://');
+      const result = await gw.sendVoice(
+        target,
+        isBase64 ? { base64: params.mediaUrl } : { url: params.mediaUrl },
+        { text: params.text, msgId: params.replyToId },
+      );
+      return { messageId: result.id };
+    }
+
+    // 视频走专用方法
+    if (kind === 'video') {
+      const result = await gw.sendVideo(target, params.mediaUrl, {
+        text: params.text,
+        msgId: params.replyToId,
+      });
+      return { messageId: result.id };
+    }
+
+    // 文件走专用方法
+    if (kind === 'file') {
+      const result = await gw.sendFile(target, params.mediaUrl, {
+        text: params.text,
+        msgId: params.replyToId,
+      });
+      return { messageId: result.id };
+    }
+
+    // 图片（默认）
+    const fileType = MEDIA_KIND_TO_FILE_TYPE[kind];
     const result = await gw.sendMedia(target, params.mediaUrl, {
       text: params.text,
       msgId: params.replyToId,
+      fileType,
     });
+    return { messageId: result.id };
+  } catch (err: unknown) {
+    return formatError(err);
+  }
+}
+
+/**
+ * 发送语音消息（便捷方法）
+ */
+export async function sendVoice(params: {
+  to: string;
+  source: { url?: string; base64?: string };
+  accountId?: string;
+  replyToId?: string;
+  account: ResolvedQQBotAccount;
+}): Promise<SendResult> {
+  const gw = gateways.get(params.account.accountId);
+  if (!gw) {
+    return { error: `Bot "${params.account.accountId}" not running` };
+  }
+
+  try {
+    const target = parseTarget(params.to);
+    const result = await gw.sendVoice(target, params.source, { msgId: params.replyToId });
+    return { messageId: result.id };
+  } catch (err: unknown) {
+    return formatError(err);
+  }
+}
+
+/**
+ * 发送视频消息（便捷方法）
+ */
+export async function sendVideo(params: {
+  to: string;
+  videoUrl: string;
+  accountId?: string;
+  replyToId?: string;
+  account: ResolvedQQBotAccount;
+}): Promise<SendResult> {
+  const gw = gateways.get(params.account.accountId);
+  if (!gw) {
+    return { error: `Bot "${params.account.accountId}" not running` };
+  }
+
+  try {
+    const target = parseTarget(params.to);
+    const result = await gw.sendVideo(target, params.videoUrl, { msgId: params.replyToId });
     return { messageId: result.id };
   } catch (err: unknown) {
     return formatError(err);
@@ -100,10 +196,33 @@ export class OutboundService {
     }
   }
 
-  async sendMedia(to: string, source: string, opts?: { text?: string; msgId?: string }): Promise<SendResult> {
+  async sendMedia(to: string, source: string, opts?: { text?: string; msgId?: string; mediaKind?: MediaKind }): Promise<SendResult> {
     try {
       const target = parseTarget(to);
-      const result = await this.gw.sendMedia(target, source, opts);
+      const kind = opts?.mediaKind ?? 'image';
+
+      if (kind === 'voice') {
+        const isBase64 = !source.startsWith('http://') && !source.startsWith('https://');
+        const result = await this.gw.sendVoice(
+          target,
+          isBase64 ? { base64: source } : { url: source },
+          { text: opts?.text, msgId: opts?.msgId },
+        );
+        return { messageId: result.id };
+      }
+
+      if (kind === 'video') {
+        const result = await this.gw.sendVideo(target, source, { text: opts?.text, msgId: opts?.msgId });
+        return { messageId: result.id };
+      }
+
+      if (kind === 'file') {
+        const result = await this.gw.sendFile(target, source, { text: opts?.text, msgId: opts?.msgId });
+        return { messageId: result.id };
+      }
+
+      const fileType = MEDIA_KIND_TO_FILE_TYPE[kind];
+      const result = await this.gw.sendMedia(target, source, { text: opts?.text, msgId: opts?.msgId, fileType });
       return { messageId: result.id };
     } catch (err: unknown) {
       return formatError(err);

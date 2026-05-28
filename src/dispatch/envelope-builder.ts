@@ -22,6 +22,8 @@ export interface OpenClawInboundMessage {
   history?: Array<{ role: string; content: string; senderId?: string; senderName?: string }>;
   quote?: { content: string; senderId: string; attachments?: unknown[] };
   attachments?: unknown[];
+  /** 入站图片 URL 列表（从附件中提取） */
+  imageUrls?: string[];
   groupId?: string;
   systemPrompt?: string;
 }
@@ -70,7 +72,26 @@ export function buildEnvelope(
 
   // envelope 是 string 类型，直接作为 content 使用；回退到原始消息内容
   const envelope = ctx.state.envelope as string | undefined;
-  const content = envelope ?? msg.content;
+  let content = envelope ?? msg.content;
+
+  // 将语音转录文本和附件信息注入到 content 中
+  const processed = ctx.state.processedAttachments as
+    | { voiceText?: string; imageUrls?: string[]; otherInfo?: string }
+    | undefined;
+
+  if (processed) {
+    const parts: string[] = [];
+    if (processed.voiceText) {
+      parts.push(processed.voiceText);
+    }
+    if (content) {
+      parts.push(content);
+    }
+    if (processed.otherInfo) {
+      parts.push(processed.otherInfo);
+    }
+    content = parts.join('\n');
+  }
 
   return {
     channelId: 'qqbot',
@@ -84,6 +105,7 @@ export function buildEnvelope(
     history: mapHistory(ctx.state.history as HistoryEntry[] | undefined),
     quote: mapQuote(ctx.state.quote as ResolvedQuote | undefined),
     attachments: msg.attachments,
+    imageUrls: processed?.imageUrls,
     groupId: scope === 'group' ? msg.replyTarget.targetId : undefined,
     systemPrompt: account.systemPrompt,
   };

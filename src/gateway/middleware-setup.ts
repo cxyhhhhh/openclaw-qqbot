@@ -21,11 +21,18 @@ import {
 } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { buildCommandList } from '../commands/index.js';
+import { attachmentProcessor } from './attachment-middleware.js';
+import { assembleBody } from '../dispatch/body-assembler.js';
+
+export interface MiddlewareSetupOptions {
+  /** 获取当前运行时配置 */
+  getCfg: () => Record<string, unknown>;
+}
 
 /**
  * 为 QQBot 实例编排完整的中间件链
  */
-export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount): void {
+export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts: MiddlewareSetupOptions): void {
   const config = account.config;
 
   // 1. 错误兜底（最外层洋葱皮）
@@ -68,10 +75,22 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount): voi
     limit: defaultGroup?.historyLimit ?? 50,
   }));
 
-  // 11. 上下文组装（构建 LLM prompt 格式的 envelope）
-  bot.use(envelopeFormatter());
+  // 11. 附件处理（语音 STT 转录 + 图片提取）
+  bot.use(attachmentProcessor({ getCfg: opts.getCfg }));
 
-  // 12. 斜杠命令（命令被匹配后直接回复，不再向下传递）
+  // 12. 上下文组装（构建内置版规约的 body）
+  // 注入自定义 formatter，调用 assembleBody 完整组装并缓存到 ctx.state
+  bot.use(envelopeFormatter({
+    format: (ctx) => {
+      const assembled = assembleBody(ctx, ctx.message as never, account);
+      // 缓存完整组装结果，供 dispatch 阶段直接消费（避免重算）
+      (ctx.state as Record<string, unknown>).assembledBody = assembled;
+      // SDK 类型契约要求 envelope 是 string，返回 agentBody（AI 实际消费的字符串）
+      return assembled.agentBody;
+    },
+  }));
+
+  // 13. 斜杠命令（命令被匹配后直接回复，不再向下传递）
   const slash = slashCommand({ commands: buildCommandList(account) });
   bot.use(slash.middleware);
 }
