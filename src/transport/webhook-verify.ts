@@ -83,7 +83,8 @@ export function verifyWebhookSignature(params: {
     ]);
     const sigBuffer = Buffer.from(signature, "hex");
     return crypto.verify(null, message, publicKey, sigBuffer);
-  } catch {
+  } catch (err) {
+    console.warn(`[qqbot:webhook-verify] Ed25519 verification threw: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }

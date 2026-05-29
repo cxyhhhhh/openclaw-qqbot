@@ -88,6 +88,9 @@ const webhookTargets = new Map<string, QQBotWebhookTarget[]>();
 /** Per-account event handler map */
 const eventHandlers = new Map<string, (event: WebhookInboundEvent) => void | Promise<void>>();
 
+/** Module-level logger (set by the last startWebhookTransport call) */
+let log: WebhookTransportOptions["log"] | undefined;
+
 /** Shared rate limiter (fixed window, per source IP) */
 let rateLimiter: FixedWindowRateLimiter | null = null;
 
@@ -142,7 +145,8 @@ async function handleQQBotWebhookRequest(req: IncomingMessage, res: ServerRespon
       let payload: { op: number; d?: unknown; t?: string; s?: number };
       try {
         payload = JSON.parse(rawBodyStr);
-      } catch {
+      } catch (err) {
+        log?.error(`[qqbot:webhook] Failed to parse request body as JSON: ${err instanceof Error ? err.message : String(err)}, body preview: ${rawBodyStr.slice(0, 200)}`);
         res.statusCode = 400;
         res.end(JSON.stringify({ error: "invalid json" }));
         return;
@@ -159,6 +163,7 @@ async function handleQQBotWebhookRequest(req: IncomingMessage, res: ServerRespon
       const signature = getHeader(req, "x-signature-ed25519") ?? "";
 
       if (!timestamp || !signature) {
+        log?.warn?.(`[qqbot:webhook] Missing signature headers — timestamp: "${timestamp}", signature: "${signature}", url: ${req.url}`);
         res.statusCode = 401;
         res.end(JSON.stringify({ error: "missing signature headers" }));
         return;
@@ -178,7 +183,10 @@ async function handleQQBotWebhookRequest(req: IncomingMessage, res: ServerRespon
         unauthorizedMessage: JSON.stringify({ error: "invalid signature" }),
       });
 
-      if (!matchedTarget) return; // response already sent by resolver
+      if (!matchedTarget) {
+        log?.warn?.(`[qqbot:webhook] Signature verification failed for path: ${req.url}, timestamp: ${timestamp}`);
+        return; // response already sent by resolver
+      }
 
       // ── ACK immediately ──
       res.statusCode = 200;
@@ -195,7 +203,11 @@ async function handleQQBotWebhookRequest(req: IncomingMessage, res: ServerRespon
               data: payload.d,
               seq: payload.s,
             }),
-          ).catch(() => {});
+          ).catch((err) => {
+            log?.error(`[qqbot:${matchedTarget.accountId}] Event handler error for "${payload.t}": ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } else {
+          log?.warn?.(`[qqbot:webhook] No event handler registered for account: ${matchedTarget.accountId}, event: ${payload.t}`);
         }
       }
     },
@@ -214,6 +226,7 @@ function handleValidation(
   const d = payload.d as { plain_token?: string; event_ts?: string } | undefined;
 
   if (!d?.plain_token || !d?.event_ts) {
+    log?.warn?.(`[qqbot:webhook] Invalid validation payload (op:13): missing plain_token or event_ts, got: ${JSON.stringify(d)}`);
     res.statusCode = 400;
     res.end(JSON.stringify({ error: "invalid validation payload" }));
     return;
@@ -223,6 +236,7 @@ function handleValidation(
   // (op:13 is sent during URL registration, only one bot should be using the path at that time)
   const target = targets[0];
   if (!target) {
+    log?.error(`[qqbot:webhook] No target registered for validation (op:13), cannot sign response`);
     res.statusCode = 500;
     res.end(JSON.stringify({ error: "no target registered" }));
     return;
@@ -251,7 +265,8 @@ function handleValidation(
  * Returns when the abortSignal is triggered (account stopped).
  */
 export async function startWebhookTransport(opts: WebhookTransportOptions): Promise<void> {
-  const { account, abortSignal, onEvent, onReady, onError, log } = opts;
+  const { account, abortSignal, onEvent, onReady, onError, log: optLog } = opts;
+  log = optLog;
   const webhookPath = account.config.webhook?.path ?? DEFAULT_WEBHOOK_PATH;
 
   log?.info(`[qqbot:${account.accountId}] Starting webhook transport on path: ${webhookPath}`);

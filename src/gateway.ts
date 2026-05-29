@@ -419,6 +419,21 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     throw new Error("QQBot not configured (missing appId or clientSecret)");
   }
 
+  // 安全网：捕获 approval-handler / SDK 内部 WS 握手异步错误（如 403），避免进程崩溃
+  const wsUncaughtHandler = (err: Error) => {
+    if (err.message?.includes("Unexpected server response")) {
+      log?.error(`[qqbot:${account.accountId}] Caught WS handshake error (non-fatal): ${err.message}`);
+      // 不重新抛出，防止进程退出
+    } else {
+      // 非 WS 握手错误，重新抛出交给上层处理
+      throw err;
+    }
+  };
+  process.on("uncaughtException", wsUncaughtHandler);
+  abortSignal.addEventListener("abort", () => {
+    process.removeListener("uncaughtException", wsUncaughtHandler);
+  }, { once: true });
+
   // 启动环境诊断（首次连接时执行）
   const diag = await runDiagnostics();
   if (diag.warnings.length > 0) {
@@ -553,7 +568,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     log,
   });
   registerApprovalHandler(account.accountId, approvalHandler);
-  void approvalHandler.start();
+  approvalHandler.start().catch((err) => {
+    log?.error(`[qqbot:${account.accountId}] approval-handler: uncaught start error: ${err}`);
+  });
 
   // ============ 消息队列（复用 createMessageQueue，内置群消息合并/淘汰策略） ============
   const msgQueue = createMessageQueue({
@@ -747,15 +764,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         clearTokenCache(account.appId);
         shouldRefreshToken = false;
       }
-      
-      const accessToken = await getAccessToken(account.appId, account.clientSecret);
-      log?.info(`[qqbot:${account.accountId}] ✅ Access token obtained successfully`);
-      const gatewayUrl = await getGatewayUrl(accessToken);
-
-      log?.info(`[qqbot:${account.accountId}] Connecting to ${gatewayUrl}`);
-
-      const ws = new WebSocket(gatewayUrl, { headers: { "User-Agent": getPluginUserAgent() } });
-      currentWs = ws;
 
       const pluginRuntime = getQQBotRuntime();
 
@@ -1940,6 +1948,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           },
           onReady: () => {
             log?.info(`[qqbot:${account.accountId}:webhook] Transport ready`);
+            log?.info(`[qqbot:${account.accountId}] ✅ Webhook transport started successfully (path: ${account.config.webhook?.path ?? "/qqbot/webhook"})`);
             onReady?.({ transport: "webhook" });
             if (_pendingFirstReady.has(account.accountId)) {
               _pendingFirstReady.delete(account.accountId);
@@ -1957,6 +1966,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         unregisterApprovalHandler(account.accountId);
         return; // webhook transport 结束，不继续 WS 逻辑
       }
+
+      // ============ WebSocket 模式：获取 token 并建立 WS 连接 ============
+      const accessToken = await getAccessToken(account.appId, account.clientSecret);
+      log?.info(`[qqbot:${account.accountId}] ✅ Access token obtained successfully`);
+      const gatewayUrl = await getGatewayUrl(accessToken);
+
+      log?.info(`[qqbot:${account.accountId}] Connecting to ${gatewayUrl}`);
+
+      const ws = new WebSocket(gatewayUrl, { headers: { "User-Agent": getPluginUserAgent() } });
+      currentWs = ws;
 
       ws.on("open", () => {
         log?.info(`[qqbot:${account.accountId}] WebSocket connected`);
@@ -2238,9 +2257,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   // 开始连接
   await connect();
 
-  // 等待 abort 信号
-  return new Promise((resolve) => {
-    abortSignal.addEventListener("abort", () => resolve());
+  // 等待 abort 信号（如果 connect() 返回时 signal 已经 aborted，直接 resolve）
+  if (abortSignal.aborted) return;
+  return new Promise<void>((resolve) => {
+    abortSignal.addEventListener("abort", () => resolve(), { once: true });
   });
 }
 
