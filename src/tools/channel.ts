@@ -1,11 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { resolveQQBotAccount } from "../config.js";
 import { listQQBotAccountIds } from "../config.js";
-import { getAccessToken } from "../api.js";
-
-// ========== 常量 ==========
-
-const API_BASE = "https://api.sgroup.qq.com";
+import { getAccessToken, API_BASE } from "../api.js";
 
 const DEFAULT_TIMEOUT_MS = 30000;
 

@@ -50,8 +50,9 @@ export class ApiError extends Error {
   }
 }
 
-const API_BASE = "https://api.sgroup.qq.com";
-const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
+// 支持环境变量覆盖，用于私有化部署/测试环境
+export const API_BASE = (process.env.QQBOT_API_BASE_URL?.replace(/\/+$/, "") || "https://api.sgroup.qq.com");
+export const TOKEN_URL = `${process.env.QQBOT_TOKEN_BASE_URL?.replace(/\/+$/, "") || "https://bots.qq.com"}/app/getAppAccessToken`;
 
 // ============ Plugin User-Agent ============
 // 格式: QQBotPlugin/{version} (Node/{nodeVersion}; {os}; OpenClaw/{openclawVersion})
