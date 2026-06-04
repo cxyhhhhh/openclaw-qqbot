@@ -4,8 +4,11 @@
  */
 
 import os from "node:os";
+import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { computeFileHash, getCachedFileInfo, setCachedFileInfo } from "./utils/upload-cache.js";
 import { sanitizeFileName } from "./utils/platform.js";
+import { resolveUserAgentSuffix } from "./config.js";
+import { getQQBotRuntime } from "./runtime.js";
 
 // ============ 模块级 Logger ============
 
@@ -65,8 +68,18 @@ let _openclawVersion = "unknown";
 export function setOpenClawVersion(version: string) {
   if (version) _openclawVersion = version;
 }
-export function getPluginUserAgent() {
-  return `QQBotPlugin/${_pluginVersion} (Node/${process.versions.node}; ${os.platform()}; OpenClaw/${_openclawVersion})`;
+
+export function getPluginUserAgent(): string {
+  const base = `QQBotPlugin/${_pluginVersion} (Node/${process.versions.node}; ${os.platform()}; OpenClaw/${_openclawVersion})`;
+  let suffix = "";
+  try {
+    const rt = getQQBotRuntime();
+    // rt.config 是配置管理器，调用 .current() 获取实际配置数据
+    const cfgMgr = rt.config as { current?: () => unknown };
+    const cfg = typeof cfgMgr.current === "function" ? cfgMgr.current() : (cfgMgr as OpenClawConfig);
+    suffix = resolveUserAgentSuffix(cfg as OpenClawConfig);
+  } catch { /* runtime 未初始化时返回无后缀 UA */ }
+  return suffix ? `${base} ${suffix}` : base;
 }
 
 // 运行时配置

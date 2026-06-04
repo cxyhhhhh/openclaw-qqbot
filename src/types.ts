@@ -29,6 +29,8 @@ export interface ResolvedQQBotAccount {
   imageServerBaseUrl?: string;
   /** 是否支持 markdown 消息（默认 true） */
   markdownSupport: boolean;
+  /** User-Agent 追加后缀（从通道级配置 channels.qqbot.userAgentSuffix 解析） */
+  userAgentSuffix?: string;
   config: QQBotAccountConfig;
 }
 
@@ -143,7 +145,7 @@ export interface QQBotAccountConfig {
    * 启用后，AI 的回复会以流式形式逐步显示在 QQ 聊天中，
    * 用户可以看到文字逐字出现的打字机效果。
    * 设置为 true 可开启流式消息。
-   * 
+   *
    * 注意：仅 C2C（私聊）支持流式消息 API。
    */
   streaming?: boolean;

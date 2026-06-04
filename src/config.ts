@@ -69,6 +69,8 @@ function evaluateMatchedGroupAccessForPolicy(params: {
 }
 
 interface QQBotChannelConfig extends QQBotAccountConfig {
+  /** HTTP/WebSocket User-Agent 追加后缀 */
+  userAgentSuffix?: string;
   accounts?: Record<string, QQBotAccountConfig>;
 }
 
@@ -176,6 +178,14 @@ export function resolveGroupName(cfg: OpenClawConfig, groupOpenid: string, accou
   return name || groupOpenid.slice(0, 8);
 }
 
+/**
+ * 解析 User-Agent 追加后缀（仅通道级：channels.qqbot.userAgentSuffix）
+ */
+export function resolveUserAgentSuffix(cfg: OpenClawConfig): string {
+  const qqbot = cfg.channels?.qqbot as QQBotChannelConfig | undefined;
+  return qqbot?.userAgentSuffix ? String(qqbot.userAgentSuffix).trim() : "";
+}
+
 function normalizeAppId(raw: unknown): string {
   if (raw === null || raw === undefined) return "";
   return String(raw).trim();
@@ -280,6 +290,7 @@ export function resolveQQBotAccount(
     systemPrompt: accountConfig.systemPrompt,
     imageServerBaseUrl: accountConfig.imageServerBaseUrl || process.env.QQBOT_IMAGE_SERVER_BASE_URL,
     markdownSupport: accountConfig.markdownSupport !== false,
+    userAgentSuffix: resolveUserAgentSuffix(cfg),
     config: accountConfig,
   };
 }
