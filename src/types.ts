@@ -128,6 +128,12 @@ export interface QQBotAccountConfig {
    */
   upgradePkg?: string;
   /**
+   * 群消息是否默认需要 @机器人才响应（默认 true）
+   * 优先级低于 groups.{groupId}.requireMention 和 groups."*".requireMention
+   * 设为 false 时，所有群默认无需 @ 即触发回复（仍可被群级配置覆盖）
+   */
+  defaultRequireMention?: boolean;
+  /**
    * 出站消息合并回复（debounce）配置
    * 当短时间内收到多次 deliver 时，将文本合并为一条消息发送，避免消息轰炸
    */

@@ -1518,6 +1518,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             });
           }
 
+          // 打印 runId 用于调试
+          log?.info?.(`[qqbot:${account.accountId}] Dispatching with runId: ${event.messageId}`);
+
           const dispatchPromise = pluginRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
             ctx: ctxPayload,
             cfg,
@@ -1788,7 +1791,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 }
               },
             },
+          
             replyOptions: {
+              // 使用消息ID作为 runId，用于追踪一次完整的 AI 对话运行
+              runId: event.messageId,
               // 流式模式时禁用 block streaming
               disableBlockStreaming: !useStreaming,
               // 流式模式下注册 onPartialReply 回调，接收流式文本增量

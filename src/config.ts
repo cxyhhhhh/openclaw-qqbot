@@ -122,16 +122,18 @@ export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, account
 
 type ResolvedGroupConfig = Omit<Required<GroupConfig>, "prompt"> & Pick<GroupConfig, "prompt">;
 
-/** 解析指定群配置（具体 groupOpenid > 通配符 "*" > 默认值） */
+/** 解析指定群配置（具体 groupOpenid > 通配符 "*" > 账户级 defaultRequireMention > 硬编码默认值） */
 export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ResolvedGroupConfig {
   const account = resolveQQBotAccount(cfg, accountId);
   const groups = account.config?.groups ?? {};
 
   const wildcardCfg = groups["*"] ?? {};
   const specificCfg = groups[groupOpenid] ?? {};
+  // 账户级默认值：defaultRequireMention 配置 > 硬编码默认 true
+  const accountDefaultRequireMention = account.config?.defaultRequireMention ?? DEFAULT_GROUP_CONFIG.requireMention;
 
   return {
-    requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? DEFAULT_GROUP_CONFIG.requireMention,
+    requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? accountDefaultRequireMention,
     ignoreOtherMentions: specificCfg.ignoreOtherMentions ?? wildcardCfg.ignoreOtherMentions ?? DEFAULT_GROUP_CONFIG.ignoreOtherMentions,
     toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
     name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
