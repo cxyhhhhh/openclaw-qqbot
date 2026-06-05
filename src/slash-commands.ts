@@ -34,11 +34,16 @@ export function getFrameworkVersion(): string {
     // Windows 上 npm 安装的 CLI 通常是 .cmd wrapper，execFileSync 需要 shell:true 才能执行
     for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
       try {
-        const out = execFileSync(cli, ["--version"], {
+        const rawOut = execFileSync(cli, ["--version"], {
           timeout: 3000, encoding: "utf8",
           ...(isWindows() ? { shell: true } : {}),
         }).trim();
         // 输出格式: "OpenClaw 2026.3.13 (61d171a)"
+        // CLI 启动时可能输出 proxy 等初始化日志到 stdout，需过滤出真正的版本行
+        const out = rawOut
+          .split("\n")
+          .find((line) => /^(OpenClaw|clawdbot|moltbot)\s/i.test(line))
+          ?.trim() ?? rawOut;
         if (out) {
           return out;
         }

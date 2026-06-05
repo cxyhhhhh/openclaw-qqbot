@@ -272,6 +272,4 @@ export function registerChannelTool(api: OpenClawPluginApi): void {
     },
     { name: "qqbot_channel_api" },
   );
-
-  console.log("[qqbot-channel-api] Registered QQ channel API proxy tool");
 }
