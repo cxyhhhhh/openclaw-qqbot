@@ -337,7 +337,7 @@ registerCommand({
   ].join("\n"),
   handler: (ctx) => {
     // 群聊场景排除仅限私聊的指令
-    const GROUP_EXCLUDED_COMMANDS = new Set(["bot-upgrade", "bot-clear-storage"]);
+    const GROUP_EXCLUDED_COMMANDS = new Set(["bot-upgrade", "bot-clear-storage", "bot-logs", "bot-approve", "bot-group-allways", "bot-streaming"]);
     const isGroup = ctx.type === "group";
 
     const lines = [`### QQBot插件内置调试指令`, ``];
@@ -1642,7 +1642,12 @@ registerCommand({
     `导出最近的 OpenClaw 日志文件（最多 4 个）。`,
     `每个文件最多保留最后 1000 行，以文件形式返回。`,
   ].join("\n"),
-  handler: () => {
+  handler: (ctx) => {
+    // 日志导出仅在私聊中可用
+    if (ctx.type !== "c2c") {
+      return `💡 请在私聊中使用此指令`;
+    }
+
     const logDirs = collectCandidateLogDirs();
     const recentFiles = collectRecentLogFiles(logDirs).slice(0, 4);
 
@@ -2042,6 +2047,11 @@ registerCommand({
     `/bot-approve status     查看当前审批配置`,
   ].join("\n"),
   handler: async (ctx) => {
+    // 审批管理仅在私聊中可用
+    if (ctx.type !== "c2c") {
+      return `💡 请在私聊中使用此指令`;
+    }
+
     const arg = ctx.args.trim().toLowerCase();
 
     // 审批功能需要 openclaw >= 3.22（gateway-runtime 模块）
@@ -2288,6 +2298,11 @@ registerCommand({
     `优先级：具体群配置 > 通配符 "*" > defaultRequireMention（本指令）> 默认 true`,
   ].join("\n"),
   handler: async (ctx) => {
+    // 群响应模式设置仅在私聊中可用
+    if (ctx.type !== "c2c") {
+      return `💡 请在私聊中使用此指令`;
+    }
+
     const arg = ctx.args.trim().toLowerCase();
 
     // 读取当前 defaultRequireMention 状态
