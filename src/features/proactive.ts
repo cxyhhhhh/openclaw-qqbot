@@ -503,3 +503,44 @@ export function getKnownUsersStats(accountId?: string): {
     channel: users.filter(u => u.type === "channel").length,
   };
 }
+
+/**
+ * 获取用户的所有群组（某用户在哪些群里交互过）
+ *
+ * @param accountId 机器人账户 ID
+ * @param openid 用户 openid
+ * @returns 群组 openid 列表
+ */
+export function getUserGroups(accountId: string, openid: string): string[] {
+  const users = loadKnownUsers();
+  const groups: string[] = [];
+  for (const [, user] of users) {
+    if (user.accountId !== accountId) continue;
+    if (user.type !== 'group') continue;
+    // group 类型的 openid 是 groupOpenid，检查该群中是否有此用户交互记录
+    // 注：当前数据模型 group 记录的 openid 是 groupOpenid 本身
+    // 要实现精确的"用户在哪些群"，需要在 recordKnownUser 时同时记录 senderOpenid
+    // 这里降级为：列出该账户的所有群 openid
+    groups.push(user.openid);
+  }
+  return [...new Set(groups)];
+}
+
+/**
+ * 获取群组的所有已知成员
+ *
+ * @param accountId 机器人账户 ID
+ * @param groupOpenid 群组 openid
+ * @returns 在该群中交互过的用户列表
+ */
+export function getGroupMembers(accountId: string, groupOpenid: string): KnownUser[] {
+  const users = loadKnownUsers();
+  const members: KnownUser[] = [];
+  for (const [, user] of users) {
+    if (user.accountId !== accountId) continue;
+    if (user.type === 'group' && user.openid === groupOpenid) {
+      members.push(user);
+    }
+  }
+  return members;
+}

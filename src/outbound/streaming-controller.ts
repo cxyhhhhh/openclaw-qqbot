@@ -2,14 +2,8 @@
  * QQ Bot 流式消息控制器
  *
  * 职责（业务层）：
- *   1. 文本规范化（normalizeMediaTags）
- *   2. 富媒体标签穿插：
- *      - 流中遇到完整 `<qqimg>path</qqimg>` → 终结当前 StreamSession
- *      - 同步上传 + 发送媒体
- *      - 开启新 StreamSession 继续后续文本
- *   3. 未闭合标签截断：发给 SDK 前剥离尾部残缺标签前缀
- *   4. 回复边界检测：基于原始文本前缀匹配，发现新消息时拼 "\n\n" 续上
- *   5. 降级判断：从未成功发出过任何分片 / 媒体 → fallback 为静态消息
+ *   1. 回复边界检测：基于原始文本前缀匹配，发现新消息时拼 "\n\n" 续上
+ *   2. 降级判断：从未成功发出过任何分片 → fallback 为静态消息
  *
  * SDK `StreamSession` 已经处理：
  *   - throttle / debounce
@@ -22,14 +16,6 @@
 
 import type { ReplyTarget, StreamSession } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotGateway } from '../gateway/qqbot-gateway.js';
-import { normalizeMediaTags } from './normalize-media-tags.js';
-import {
-  findFirstClosedMediaTag,
-  stripIncompleteMediaTag,
-  type MediaItemType,
-} from './streaming-tags.js';
-import { sendMedia } from './media-send.js';
-import type { MediaKind } from './outbound-service.js';
 
 // ── 类型 ──
 
@@ -40,7 +26,7 @@ export interface StreamingControllerDeps {
   gateway: QQBotGateway;
   /** 流式目标（必须是 c2c） */
   target: ReplyTarget;
-  /** 账户 ID（供 sendMedia 路由） */
+  /** 账户 ID */
   accountId: string;
   /** 用于被动回复的入站消息 ID */
   replyToId: string;
@@ -55,20 +41,10 @@ export interface StreamingControllerDeps {
   throttleMs?: number;
 }
 
-// ── 媒体类型映射 ──
-
-const ITEM_TO_MEDIA_KIND: Record<MediaItemType, MediaKind> = {
-  image: 'image',
-  voice: 'voice',
-  video: 'video',
-  file: 'file',
-  media: 'image', // qqmedia 默认按图片处理
-};
-
 // ── 控制器 ──
 
 /**
- * 精简版流式控制器
+ * 流式控制器
  *
  * 通过 `onPartialReply(text)` 持续接收全量文本，
  * 通过 `finalize()` 标记终结，
@@ -78,22 +54,13 @@ export class StreamingController {
   private phase: StreamingPhase = 'idle';
   private session: StreamSession | null = null;
 
-  /** 最后一次收到的原始文本（用于边界检测，未 normalize） */
+  /** 最后一次收到的原始文本（用于边界检测） */
   private lastRawFull = '';
-  /** 最后一次 normalize 后的完整文本（用于切片发送） */
-  private lastNormalizedFull = '';
   /** 边界拼接前缀（检测到新回复时使用） */
   private boundaryPrefix: string | null = null;
-  /**
-   * 在 lastNormalizedFull 中已"消费"到的位置 —
-   * 即流式已发出 + 媒体已处理的文本截止点。
-   */
-  private sentIndex = 0;
 
-  /** 已成功发送的流式分片或媒体计数（用于降级判断） */
+  /** 已成功发送的流式分片计数（用于降级判断） */
   private sentChunkCount = 0;
-  /** 已成功发出的媒体数 */
-  private sentMediaCount = 0;
 
   /** 串行队列：所有 onPartialReply / finalize 经此排队执行 */
   private chain: Promise<unknown> = Promise.resolve();
@@ -111,7 +78,7 @@ export class StreamingController {
   }
 
   /**
-   * 是否应降级到静态消息：终态 + 从未成功发出任何分片/媒体。
+   * 是否应降级到静态消息：终态 + 从未成功发出任何分片。
    * 上层在 finalize 后据此判断是否走 `sendText` 兜底。
    */
   get shouldFallbackToStatic(): boolean {
@@ -165,7 +132,7 @@ export class StreamingController {
     // 边界拼接：若已发生过边界，自动加前缀
     const fullText = this.boundaryPrefix !== null ? this.boundaryPrefix + text : text;
 
-    // 回复边界检测（用原始文本前缀匹配，避免 normalize 不稳定）
+    // 回复边界检测（用原始文本前缀匹配）
     if (this.lastRawFull && fullText.length > 0 && !fullText.startsWith(this.lastRawFull)) {
       this.logInfo(
         `reply boundary detected: prev=${this.lastRawFull.length} new=${fullText.length}`,
@@ -173,13 +140,11 @@ export class StreamingController {
       this.boundaryPrefix = this.lastRawFull + '\n\n';
       const merged = this.boundaryPrefix + text;
       this.lastRawFull = merged;
-      this.lastNormalizedFull = normalizeMediaTags(merged);
+      await this.ensureSessionWith(merged);
     } else {
       this.lastRawFull = fullText;
-      this.lastNormalizedFull = normalizeMediaTags(fullText);
+      await this.ensureSessionWith(fullText);
     }
-
-    await this.processMediaTags();
   }
 
   // ── 内部：finalize 串行体 ──
@@ -187,28 +152,18 @@ export class StreamingController {
   private async doFinalize(finalText?: string): Promise<void> {
     if (this.isTerminal) return;
 
-    // 若 final 文本与已知内容一致 / 包含，使用 final 作为最终全量
+    // 若有 finalText，做最后一次 update
     if (finalText) {
-      const finalNorm = normalizeMediaTags(finalText);
-      if (finalNorm.includes(this.lastNormalizedFull)) {
-        this.lastNormalizedFull = finalNorm;
-      } else if (!this.lastNormalizedFull.includes(finalNorm)) {
-        this.logWarn(`finalize text mismatch — keeping current normalized text`);
+      const fullText = this.boundaryPrefix !== null ? this.boundaryPrefix + finalText : finalText;
+      if (fullText !== this.lastRawFull) {
+        this.lastRawFull = fullText;
+        await this.ensureSessionWith(fullText);
       }
     }
 
-    // 处理 sentIndex 后剩余的已闭合媒体标签
-    await this.processMediaTags();
-    if (this.isTerminal) return;
-
-    // 终结当前流式会话（如果有的话）
+    // 终结当前流式会话
     if (this.session) {
       try {
-        const remainText = this.lastNormalizedFull.slice(this.sentIndex);
-        const [safeText] = stripIncompleteMediaTag(remainText);
-        if (safeText) {
-          await this.session.update(safeText);
-        }
         await this.session.complete();
         this.session = null;
         this.transitionTo('completed', 'finalize:done');
@@ -226,69 +181,6 @@ export class StreamingController {
     } else {
       this.logInfo('no chunks sent, falling back to static');
       this.transitionTo('aborted', 'finalize:fallback_to_static');
-    }
-  }
-
-  // ── 内部：媒体标签穿插循环 ──
-
-  private async processMediaTags(): Promise<void> {
-    while (!this.isTerminal) {
-      const incremental = this.lastNormalizedFull.slice(this.sentIndex);
-      const found = findFirstClosedMediaTag(incremental);
-      if (!found) break;
-
-      const absoluteEnd = this.sentIndex + found.tagEndIndex;
-      this.logInfo(
-        `media tag <${found.tagName}> at offset ${this.sentIndex} → ${absoluteEnd}`,
-      );
-
-      // 1. 把标签前的文本通过当前流式会话发完并终结
-      const textBeforeTag = found.textBefore;
-      try {
-        if (textBeforeTag.trim() || this.session) {
-          await this.ensureSessionWith(textBeforeTag);
-          await this.endCurrentSession();
-        }
-      } catch (err) {
-        this.logError(`endCurrentSession failed: ${err instanceof Error ? err.message : String(err)}`);
-        this.transitionTo('aborted', 'media:end_session_error');
-        return;
-      }
-
-      // 2. 同步发送媒体
-      try {
-        const mediaKind = ITEM_TO_MEDIA_KIND[found.itemType];
-        const result = await sendMedia({
-          to: `qqbot:${this.deps.target.scope}:${this.deps.target.targetId}`,
-          source: found.mediaPath,
-          mediaKind,
-          replyToId: this.deps.replyToId,
-          accountId: this.deps.accountId,
-          log: this.deps.log,
-        });
-        if (result.error) {
-          this.logError(`sendMedia failed: ${result.error}`);
-        } else {
-          this.sentMediaCount += 1;
-          this.sentChunkCount += 1;
-        }
-      } catch (err) {
-        this.logError(`sendMedia threw: ${err instanceof Error ? err.message : String(err)}`);
-      }
-
-      // 3. 推进 sentIndex，进入下一轮（可能仍有标签）
-      this.sentIndex = absoluteEnd;
-    }
-
-    // 4. 没有更多媒体标签 — 把当前安全文本推给流式会话
-    if (this.isTerminal) return;
-    const remain = this.lastNormalizedFull.slice(this.sentIndex);
-    const [safeText, stripped] = stripIncompleteMediaTag(remain);
-    if (stripped) {
-      this.logDebug(`stripped incomplete tag prefix from streaming chunk`);
-    }
-    if (safeText.trim()) {
-      await this.ensureSessionWith(safeText);
     }
   }
 
@@ -312,18 +204,6 @@ export class StreamingController {
     }
   }
 
-  /**
-   * 终结当前 StreamSession（发送 DONE 帧）并清空引用。
-   */
-  private async endCurrentSession(): Promise<void> {
-    if (!this.session) return;
-    try {
-      await this.session.complete();
-    } finally {
-      this.session = null;
-    }
-  }
-
   // ── 内部：状态机 ──
 
   private transitionTo(next: StreamingPhase, reason: string): void {
@@ -340,14 +220,6 @@ export class StreamingController {
 
   private logError(msg: string): void {
     this.deps.log?.error(`[qqbot:streaming] ${msg}`);
-  }
-
-  private logWarn(msg: string): void {
-    (this.deps.log?.warn ?? this.deps.log?.info)?.(`[qqbot:streaming] ${msg}`);
-  }
-
-  private logDebug(msg: string): void {
-    this.deps.log?.debug?.(`[qqbot:streaming] ${msg}`);
   }
 }
 

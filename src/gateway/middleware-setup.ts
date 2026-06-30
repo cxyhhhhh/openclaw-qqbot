@@ -50,10 +50,11 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
     }));
   }
 
-  // 4. 群聊 @bot 门控
+  // 4. 群聊 @bot 门控（含 ignoreOtherMentions — @了其他人但未@bot 时直接丢弃）
   const defaultGroup = config.groups?.['*'];
   bot.use(mentionGate({
     requireMentionInGroup: defaultGroup?.requireMention ?? true,
+    ignoreOtherMentions: defaultGroup?.ignoreOtherMentions ?? false,
   }));
 
   // 5. 内容清洗（去 @marker、表情标签、多余空白）

@@ -16,7 +16,8 @@ import type { GatewayLogSink } from '../gateway/qqbot-gateway.js';
 import { buildEnvelope } from './envelope-builder.js';
 import { assembleBody, type AssembledBody } from './body-assembler.js';
 import { sendText, sendMedia, getGateway } from '../outbound/outbound-service.js';
-import { deliverReply, ToolMediaCollector, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
+import { deliverReply, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
+import { DeliverDebouncer } from '../outbound/debounce.js';
 import { StreamingController, shouldUseStreaming } from '../outbound/streaming-controller.js';
 import { getAdapters, type RuntimeAdapters } from '../runtime-adapter/resolve.js';
 
@@ -114,11 +115,16 @@ export async function dispatchToOpenClaw(
     (ctxPayload as any).MediaUrl = processed.remoteMediaUrls[0];
   }
 
-  // Tool media 收集器（跨 deliver 调用积累）
-  const toolMedia = new ToolMediaCollector();
-
   // TTS 能力探测
   const ttsRuntime = (runtime as any)?.tts ?? (runtime as any)?.channel?.runtimeContexts?.get?.('tts'); // @adapter-bypass: TTS 是插件扩展点，非核心 channel API
+
+  // 出站文本合并防抖（按账户配置启用）
+  const debounceConfig = account.config?.deliverDebounce;
+  const debouncer = debounceConfig?.enabled !== false
+    ? new DeliverDebouncer(debounceConfig, (targetId, mergedText) =>
+        sendText({ to: targetId, text: mergedText, accountId: account.accountId, replyToId: envelope.messageId, account }).then(() => {}),
+      )
+    : undefined;
 
   // 构建 deliver context
   const deliverCtx: DeliverContext = {
@@ -127,6 +133,7 @@ export async function dispatchToOpenClaw(
     replyToId: envelope.messageId,
     chatScope: envelope.chatScope === 'group' ? 'group' : 'direct',
     cfg,
+    debouncer: debouncer?.enabled ? debouncer : undefined,
     sendText: (to, text) => sendText({ to, text, accountId: account.accountId, replyToId: envelope.messageId, account }),
     sendMedia: (to, source, opts) => sendMedia({
       to,
@@ -198,7 +205,7 @@ export async function dispatchToOpenClaw(
                   }
                   log?.warn(`[qqbot:${account.accountId}] streaming fallback to static deliver`);
                 }
-                await deliverReply(payload, info, deliverCtx, toolMedia);
+                await deliverReply(payload, info, deliverCtx);
               },
             },
             replyOptions: streamingController
@@ -217,6 +224,11 @@ export async function dispatchToOpenClaw(
   // 终态保护
   if (streamingController && !streamingController.isTerminal) {
     await streamingController.finalize();
+  }
+
+  // 刷新 debounce 缓冲区中的剩余文本
+  if (debouncer) {
+    await debouncer.flushAll();
   }
 }
 

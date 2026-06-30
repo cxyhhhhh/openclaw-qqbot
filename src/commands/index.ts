@@ -15,7 +15,7 @@ import { botStreaming } from './bot-streaming.js';
 import { botClearStorage } from './bot-clear-storage.js';
 
 /**
- * 构建命令列表
+ * 构建标准命令列表（匹配后直接回复，不进入 AI）
  */
 export function buildCommandList(account: ResolvedQQBotAccount): SlashCommand[] {
   return [
@@ -28,3 +28,5 @@ export function buildCommandList(account: ResolvedQQBotAccount): SlashCommand[] 
     botClearStorage(account),
   ];
 }
+
+

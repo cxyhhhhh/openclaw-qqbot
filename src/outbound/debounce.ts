@@ -2,7 +2,10 @@
  * 出站消息合并防抖
  *
  * 当短时间内收到多次 deliver 时，将文本合并为一条消息发送，避免消息轰炸。
- * 从原 src/deliver-debounce.ts 迁移。
+ *
+ * 注：框架 ReplyDispatcher 通过 sendChain 保证 deliver 严格串行——
+ * enqueue 返回的 Promise 在文本实际发出前不会 resolve，因此上游
+ * 不会并发调用 deliver，无需 flushBeforeMedia。
  */
 import type { DeliverDebounceConfig } from '../types.js';
 
@@ -39,7 +42,7 @@ export class DeliverDebouncer {
   }
 
   /**
-   * 入队一条待发送文本
+   * 入队一条纯文本待发送消息
    * @returns Promise，在文本实际发送时 resolve
    */
   async enqueue(targetId: string, text: string): Promise<void> {
