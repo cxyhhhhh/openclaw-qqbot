@@ -31,7 +31,7 @@ export function resolveTTSProvider(runtime: any): TTSProvider | undefined {
     return runtime.tts;
   }
   // 方式 2: channel runtime context 注册
-  const tts = runtime?.channel?.runtimeContexts?.get?.('tts');
+  const tts = runtime?.channel?.runtimeContexts?.get?.('tts'); // @adapter-bypass: TTS 扩展点探测，非核心 channel API
   if (tts?.textToSpeech) {
     return tts;
   }

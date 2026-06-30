@@ -11,9 +11,10 @@ import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
 import { emptyPluginConfigSchema } from 'openclaw/plugin-sdk';
 
 import { qqbotPlugin } from './src/channel.js';
-import { setQQBotRuntime } from './src/runtime.js';
+import { setQQBotRuntime, getLogger } from './src/runtime.js';
 import { registerChannelTool } from './src/tools/channel.js';
 import { registerRemindTool } from './src/tools/remind.js';
+import { verifyRuntimeContract } from './src/runtime-adapter/contract-check.js';
 
 const plugin = {
   id: 'openclaw-qqbot',
@@ -22,6 +23,17 @@ const plugin = {
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     setQQBotRuntime(api.runtime);
+
+    // ── 启动时契约校验：必需 API 不可用则 fail-fast ──
+    const contract = verifyRuntimeContract(api.runtime, getLogger());
+    if (!contract.ok) {
+      throw new Error(
+        `openclaw-qqbot incompatible with openclaw ${contract.version}: ` +
+        `missing required APIs: ${contract.missing.join(', ')}. ` +
+        `Please upgrade openclaw or downgrade the plugin.`,
+      );
+    }
+
     api.registerChannel({ plugin: qqbotPlugin as any });
     registerChannelTool(api);
     registerRemindTool(api);

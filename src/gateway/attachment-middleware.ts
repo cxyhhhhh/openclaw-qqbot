@@ -20,6 +20,7 @@ import type { MessageAttachment } from '../types.js';
 import { transcribeAudio, resolveSTTConfig } from '../utils/stt.js';
 import { formatVoiceText, formatDuration, type VoiceTranscript, type TranscriptSource } from '../utils/voice-text.js';
 import { getQQBotDataDir, getQQBotMediaDir } from '../utils/platform.js';
+import { resolveRuntimeAdapters } from '../runtime-adapter/resolve.js';
 
 export { formatVoiceText, formatDuration };
 export type { VoiceTranscript, TranscriptSource };
@@ -60,7 +61,8 @@ export function attachmentProcessor(opts: AttachmentMiddlewareOptions) {
       const accountId = (ctx.bot as any).accountId ?? 'default';
       const log = ctx.log;
       const runtime = opts.getRuntime?.();
-      const result = await processAttachments(attachments, cfg, accountId, log, runtime);
+      const mediaSaver = runtime ? resolveRuntimeAdapters(runtime).saveRemoteMedia ?? undefined : undefined;
+      const result = await processAttachments(attachments, cfg, accountId, log, mediaSaver);
 
       if (result.voiceText || result.imageUrls.length > 0 || result.otherInfo || result.localMediaPaths.length > 0) {
         ctx.state.processedAttachments = result;
@@ -80,12 +82,11 @@ async function processAttachments(
   cfg: Record<string, unknown>,
   accountId: string,
   log?: Log,
-  runtime?: any,
+  mediaSaver?: ((opts: { url: string; subdir?: string; originalFilename?: string }) => Promise<{ filePath: string } | null>),
 ): Promise<ProcessedAttachments> {
   const downloadDir = getQQBotMediaDir('downloads');
   const sttCfg = resolveSTTConfig(cfg);
   const audioPolicy = resolveAudioPolicy(cfg);
-  const mediaSaver = runtime?.channel?.media?.saveRemoteMedia;
 
   const imageUrls: string[] = [];
   const otherParts: string[] = [];

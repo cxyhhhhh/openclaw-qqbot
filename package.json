@@ -38,6 +38,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
+    "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts",
     "prepack": "npm install --omit=dev",
     "postinstall": "node scripts/postinstall-link-sdk.js 2>/dev/null || true"
   },

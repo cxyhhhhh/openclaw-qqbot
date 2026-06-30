@@ -24,6 +24,7 @@ import {
   resolveGroupConfig,
 } from './config.js';
 import { getQQBotRuntime } from './runtime.js';
+import { resolveRuntimeAdapters } from './runtime-adapter/resolve.js';
 import { sendText } from './outbound/outbound-service.js';
 import { sendMedia } from './outbound/media-send.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
@@ -161,7 +162,26 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   // ── 出站 ──
   outbound: {
     deliveryMode: 'direct',
-    chunker: (text, limit) => getQQBotRuntime().channel.text.chunkMarkdownText(text, limit),
+    chunker: (text, limit) => {
+      const rt = getQQBotRuntime();
+      const adapters = resolveRuntimeAdapters(rt);
+      if (adapters.chunkMarkdownText) return adapters.chunkMarkdownText(text, limit);
+      // fallback（低版本降级）: 按换行边界切分，避免拆断 Markdown 行
+      const lines = text.split('\n');
+      const chunks: string[] = [];
+      let current = '';
+      for (const line of lines) {
+        const candidate = current ? `${current}\n${line}` : line;
+        if (candidate.length > limit && current) {
+          chunks.push(current);
+          current = line;
+        } else {
+          current = candidate;
+        }
+      }
+      if (current) chunks.push(current);
+      return chunks.length > 0 ? chunks : [text];
+    },
     chunkerMode: 'markdown',
     textChunkLimit: TEXT_CHUNK_LIMIT,
     shouldSuppressLocalPayloadPrompt: ({ payload }: any) => isApprovalPayload(payload),

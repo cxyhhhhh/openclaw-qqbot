@@ -1,0 +1,212 @@
+/**
+ * Runtime Adapters — 一次 resolve，全程复用。
+ *
+ * Capability Probe 模式：按候选 API 路径探测，选出第一个可用函数。
+ * 对每个 runtime API 维护一个"候选列表"（最新在前），未来 API 改名时只需 +1 行。
+ *
+ * 调用方通过 `resolveRuntimeAdapters(runtime)` 获取适配层对象，
+ * 后续所有 dispatch / channel 代码只使用 adapters 上的方法。
+ */
+
+import type { PluginRuntime } from 'openclaw/plugin-sdk';
+
+// ── 类型 ──
+
+export interface RuntimeAdapters {
+  /** 入站事件处理（自动适配 inbound.run / turn.run） */
+  inboundRun: ((params: any) => Promise<any>) | null;
+  /** 回复分发（带 block buffer） */
+  dispatchReply: ((params: any) => Promise<any>) | null;
+  /** Agent 路由解析 */
+  resolveAgentRoute: ((params: any) => any) | null;
+  /** 构建入站上下文（自动适配 inbound.buildContext / reply.finalizeInboundContext） */
+  buildInboundContext: ((params: any) => any) | null;
+  /** Session store path 解析 */
+  resolveStorePath: ((storeConfig: any, opts: any) => string) | null;
+  /** Session 记录 */
+  recordInboundSession: ((params: any) => Promise<void>) | null;
+  /** 格式化 envelope（自动适配 formatAgentEnvelope / formatInboundEnvelope） */
+  formatEnvelope: ((params: any) => string) | null;
+  /** 解析 envelope format options */
+  resolveEnvelopeFormatOptions: ((cfg: any) => any) | null;
+  /** Markdown 文本分块 */
+  chunkMarkdownText: ((text: string, limit: number) => string[]) | null;
+  /** 远程媒体保存（图片/语音下载） */
+  saveRemoteMedia: ((opts: { url: string; subdir?: string; originalFilename?: string }) => Promise<{ filePath: string } | null>) | null;
+  /** 获取当前配置 */
+  getConfig: (() => any) | null;
+  /** openclaw 版本 */
+  version: string;
+}
+
+// ── Probe 辅助 ──
+
+type ProbePath = string[];
+
+/**
+ * 从 runtime 对象沿路径探测函数。返回 bound function 或 null。
+ */
+function probeFunction(rt: any, paths: ProbePath[]): ((...args: any[]) => any) | null {
+  for (const path of paths) {
+    let target = rt;
+    let parent = rt;
+    for (let i = 0; i < path.length; i++) {
+      parent = target;
+      target = target?.[path[i]];
+      if (target === undefined || target === null) break;
+    }
+    if (typeof target === 'function') {
+      // bind 到 parent（倒数第二层），确保 this 上下文正确
+      return target.bind(parent);
+    }
+  }
+  return null;
+}
+
+/**
+ * 从 runtime 对象沿路径探测值（非函数也可）。返回值或 null。
+ */
+function probeValue(rt: any, paths: ProbePath[]): any {
+  for (const path of paths) {
+    let target = rt;
+    for (const key of path) {
+      target = target?.[key];
+      if (target === undefined || target === null) break;
+    }
+    if (target !== undefined && target !== null) return target;
+  }
+  return null;
+}
+
+// ── 主入口 ──
+
+/**
+ * 一次性 resolve 所有 runtime adapter。
+ *
+ * 通常在 gateway ready 后（首条消息到来前）调用一次，结果缓存复用。
+ * 返回 null 的字段表示该能力不可用，调用方按需降级或走 fallback。
+ */
+export function resolveRuntimeAdapters(
+  rt: PluginRuntime,
+  log?: { info: (m: string) => void; debug?: (m: string) => void },
+): RuntimeAdapters {
+  const version = (rt as any).version ?? 'unknown';
+
+  const inboundRun = probeFunction(rt, [
+    ['channel', 'inbound', 'run'],      // current (2026-05+)
+    ['channel', 'turn', 'run'],          // legacy (removed 2026-05-27)
+  ]);
+
+  const dispatchReply = probeFunction(rt, [
+    ['channel', 'reply', 'dispatchReplyWithBufferedBlockDispatcher'],
+  ]);
+
+  const resolveAgentRoute = probeFunction(rt, [
+    ['channel', 'routing', 'resolveAgentRoute'],
+  ]);
+
+  // 构建入站上下文：新 API 优先，低版本 fallback 到 deprecated finalizeInboundContext
+  // 两个 API 签名不同，通过 wrapper 统一为 buildInboundContext(params) 接口
+  const rawBuildContext = probeFunction(rt, [
+    ['channel', 'inbound', 'buildContext'],
+  ]);
+  const rawFinalizeContext = !rawBuildContext
+    ? probeFunction(rt, [['channel', 'reply', 'finalizeInboundContext']])
+    : null;
+
+  const buildInboundContext: RuntimeAdapters['buildInboundContext'] = rawBuildContext
+    ? (params) => rawBuildContext(params)
+    : rawFinalizeContext
+      ? (params) => {
+          // 将统一参数转换为旧 API 的 rawCtxPayload 格式
+          const rawCtx = {
+            Body: params.message.body,
+            BodyForAgent: params.message.bodyForAgent,
+            RawBody: params.message.rawBody,
+            CommandBody: params.message.commandBody ?? params.message.rawBody,
+            From: params.from,
+            To: params.reply.to,
+            SessionKey: params.route.routeSessionKey,
+            AccountId: params.route.accountId ?? params.accountId,
+            ChatType: params.conversation.kind,
+            GroupSystemPrompt: params.conversation.label,
+            SenderId: params.sender.id,
+            SenderName: params.sender.name,
+            Provider: params.provider ?? params.channel,
+            Surface: params.surface ?? params.channel,
+            MessageSid: params.messageId,
+            Timestamp: params.timestamp ?? Date.now(),
+            OriginatingChannel: params.channel,
+            OriginatingTo: params.reply.originatingTo ?? params.reply.to,
+            CommandAuthorized: false,
+            ...params.extra,
+          };
+          return rawFinalizeContext(rawCtx);
+        }
+      : null;
+
+  const resolveStorePath = probeFunction(rt, [
+    ['channel', 'session', 'resolveStorePath'],
+  ]);
+
+  const recordInboundSession = probeFunction(rt, [
+    ['channel', 'session', 'recordInboundSession'],
+  ]);
+
+  // 格式化 envelope：新 API 优先，低版本 fallback 到 deprecated formatInboundEnvelope
+  const formatEnvelope = probeFunction(rt, [
+    ['channel', 'reply', 'formatAgentEnvelope'],    // current (2026-06+)
+    ['channel', 'reply', 'formatInboundEnvelope'],  // deprecated，低版本兼容
+  ]);
+
+  const resolveEnvelopeFormatOptions = probeFunction(rt, [
+    ['channel', 'reply', 'resolveEnvelopeFormatOptions'],
+  ]);
+
+  const chunkMarkdownText = probeFunction(rt, [
+    ['channel', 'text', 'chunkMarkdownText'],
+  ]);
+
+  const saveRemoteMedia = probeFunction(rt, [
+    ['channel', 'media', 'saveRemoteMedia'],
+  ]);
+
+  const getConfig = probeFunction(rt, [
+    ['config', 'current'],
+  ]) ?? probeFunction(rt, [
+    ['getConfig'],
+  ]);
+
+  // 日志汇总
+  const resolved = [
+    inboundRun && 'inboundRun',
+    dispatchReply && 'dispatchReply',
+    resolveAgentRoute && 'resolveAgentRoute',
+    buildInboundContext && 'buildInboundContext',
+    resolveStorePath && 'resolveStorePath',
+    recordInboundSession && 'recordInboundSession',
+    formatEnvelope && 'formatEnvelope',
+    chunkMarkdownText && 'chunkMarkdownText',
+    saveRemoteMedia && 'saveRemoteMedia',
+    getConfig && 'getConfig',
+  ].filter(Boolean);
+
+  log?.info(
+    `[qqbot:adapter] openclaw=${version} resolved ${resolved.length} adapters: ${resolved.join(', ')}`,
+  );
+
+  return {
+    inboundRun,
+    dispatchReply,
+    resolveAgentRoute,
+    buildInboundContext,
+    resolveStorePath,
+    recordInboundSession,
+    formatEnvelope,
+    resolveEnvelopeFormatOptions,
+    chunkMarkdownText,
+    saveRemoteMedia,
+    getConfig,
+    version,
+  };
+}
