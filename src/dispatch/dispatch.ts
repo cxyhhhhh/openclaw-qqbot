@@ -3,10 +3,10 @@
  *
  * 核心职责：
  * 1. 从 SDK MiddlewareContext 构建 OpenClaw 标准信封
- * 2. 通过 runtime.channel.turn.run() 将消息交给 AI 处理
+ * 2. 通过 runtime.channel.inbound.run() 将消息交给 AI 处理
  *
  * 架构说明：
- * - runtime: 全局 PluginRuntime（register 阶段注入），提供 channel.turn.run / channel.reply 等
+ * - runtime: 全局 PluginRuntime（register 阶段注入），提供 channel.inbound.run / channel.reply 等
  * - log: per-account 日志（从 ctx.log 透传），用于运行时日志输出
  */
 import type { MiddlewareContext, QQBotInboundMessage } from '@tencent-connect/qqbot-nodejs';
@@ -15,8 +15,9 @@ import type { ResolvedQQBotAccount } from '../types.js';
 import type { GatewayLogSink } from '../gateway/qqbot-gateway.js';
 import { buildEnvelope } from './envelope-builder.js';
 import { assembleBody, type AssembledBody } from './body-assembler.js';
-import { sendText, sendMedia } from '../outbound/outbound-service.js';
+import { sendText, sendMedia, getGateway } from '../outbound/outbound-service.js';
 import { deliverReply, ToolMediaCollector, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
+import { StreamingController, shouldUseStreaming } from '../outbound/streaming-controller.js';
 
 /**
  * 将经过中间件处理的入站消息转发给 OpenClaw AI
@@ -37,8 +38,8 @@ export async function dispatchToOpenClaw(
 
   const channel = runtime.channel as any;
 
-  if (!channel?.turn?.run) {
-    log?.error(`[qqbot:${account.accountId}] runtime.channel.turn.run not available`);
+  if (!channel?.inbound?.run) {
+    log?.error(`[qqbot:${account.accountId}] runtime.channel.inbound.run not available`);
     return;
   }
 
@@ -151,20 +152,34 @@ export async function dispatchToOpenClaw(
     log: log ? { info: log.info, error: log.error, debug: log.debug } : undefined,
   };
 
-  // 通过 turn.run 分发消息给 AI
-  await channel.turn.run({
+  // ── 流式路由：账户开启 streaming + C2C 时启用 ──
+  const streamingEnabled = shouldUseStreaming(
+    account,
+    envelope.chatScope === 'group' ? 'group' : 'c2c',
+  );
+
+  const streamingController = streamingEnabled
+    ? createStreamingController(envelope, account, log)
+    : null;
+
+  if (streamingController) {
+    log?.info(`[qqbot:${account.accountId}] streaming enabled for ${envelope.senderId}`);
+  }
+
+  // 通过 channel.inbound.run 分发消息给 AI
+  await channel.inbound.run({
     channel: 'qqbot',
     accountId: route.accountId,
     raw: envelope,
     adapter: {
-      ingest: () => ({
+      ingest: (raw: any) => ({
         id: envelope.messageId,
         rawText: assembled.rawBody,
         textForAgent: assembled.agentBody,
         textForCommands: assembled.rawBody,
-        raw: envelope,
+        raw,
       }),
-      resolveTurn: () => ({
+      resolveTurn: (_input: unknown, _eventClass: unknown, _preflight: unknown) => ({
         channel: 'qqbot',
         accountId: route.accountId,
         routeSessionKey: route.sessionKey,
@@ -182,13 +197,58 @@ export async function dispatchToOpenClaw(
             cfg,
             dispatcherOptions: {
               deliver: async (payload: DeliverPayload, info?: DeliverInfo) => {
+                // 流式启用且尚未降级 → 由 onPartialReply 驱动；deliver 仅用于 finalize / 降级 fallback
+                if (streamingController && !streamingController.shouldFallbackToStatic) {
+                  await streamingController.finalize(payload.text);
+                  if (!streamingController.shouldFallbackToStatic) {
+                    return; // 流式正常完成，无需走 deliver pipeline
+                  }
+                  log?.warn(`[qqbot:${account.accountId}] streaming fallback to static deliver`);
+                }
                 await deliverReply(payload, info, deliverCtx, toolMedia);
               },
             },
+            replyOptions: streamingController
+              ? {
+                  onPartialReply: async (p: { text?: string }) => {
+                    if (p.text) await streamingController.onPartialReply(p.text);
+                  },
+                }
+              : undefined,
           });
         },
       }),
     },
+  });
+
+  // 终态保护：如果 deliver 从未被调用（罕见，但模型可能直接结束），主动 finalize
+  if (streamingController && !streamingController.isTerminal) {
+    await streamingController.finalize();
+  }
+}
+
+// ── 流式控制器工厂 ──
+
+function createStreamingController(
+  envelope: ReturnType<typeof buildEnvelope>,
+  account: ResolvedQQBotAccount,
+  log?: GatewayLogSink,
+): StreamingController | null {
+  const gw = getGateway(account.accountId);
+  if (!gw) {
+    log?.error(`[qqbot:${account.accountId}] cannot enable streaming — gateway not running`);
+    return null;
+  }
+  return new StreamingController({
+    gateway: gw,
+    target: {
+      scope: 'c2c',
+      targetId: envelope.senderId,
+      msgId: envelope.messageId,
+    },
+    accountId: account.accountId,
+    replyToId: envelope.messageId,
+    log,
   });
 }
 

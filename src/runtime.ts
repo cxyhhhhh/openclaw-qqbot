@@ -16,14 +16,44 @@
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk";
 import { getRequestContext } from "./request-context.js";
 import { setOpenClawVersion } from "./bot-instance.js";
+import { flushAllRefIndexStores } from "./features/ref-index-store.js";
 
 // ─── Runtime Store ───────────────────────────────────────────────────────────
 
 let runtime: PluginRuntime | null = null;
+let exitHooksInstalled = false;
 
 export function setQQBotRuntime(next: PluginRuntime) {
   runtime = next;
   setOpenClawVersion(next.version);
+  installExitHooksOnce();
+}
+
+/**
+ * 注册进程退出钩子，确保 ref-index 等持久化资源在退出前完成最终 compact。
+ * 多次调用 setQQBotRuntime 时只注册一次。
+ */
+function installExitHooksOnce(): void {
+  if (exitHooksInstalled) return;
+  exitHooksInstalled = true;
+
+  const flush = () => {
+    try {
+      flushAllRefIndexStores();
+    } catch {
+      // 静默忽略，退出阶段尽力而为
+    }
+  };
+
+  process.on('beforeExit', flush);
+  process.on('SIGINT', () => {
+    flush();
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    flush();
+    process.exit(0);
+  });
 }
 
 export function getQQBotRuntime(): PluginRuntime {

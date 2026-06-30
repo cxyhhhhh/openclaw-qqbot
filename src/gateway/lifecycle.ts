@@ -12,7 +12,7 @@ import type { ResolvedQQBotAccount } from '../types.js';
 import { DEFAULT_ACCOUNT_ID, resolveQQBotAccount, applyQQBotAccountConfig } from '../config.js';
 import { getQQBotRuntime } from '../runtime.js';
 import { QQBotGateway, type GatewayLogSink } from './qqbot-gateway.js';
-import { registerGateway, unregisterGateway } from '../outbound/outbound-service.js';
+import { registerGateway, unregisterGateway, getGateway } from '../outbound/outbound-service.js';
 import { saveCredentialBackup, loadCredentialBackup } from '../features/credential-backup.js';
 import { startImageServer, isImageServerRunning } from '../features/image-server.js';
 import { triggerUpdateCheck } from '../features/update-checker.js';
@@ -117,6 +117,43 @@ function initFeatures(account: ResolvedQQBotAccount, cfg: any, log?: GatewayLogS
   } catch (e) {
     // 旧版框架无 gateway-runtime 时会抛出，降级为不可用
     log?.debug?.(`[qqbot:${account.accountId}] Approval handler not available: ${e}`);
+  }
+}
+
+/**
+ * 停止账户 — 主动调用，与 abort 信号双保险。
+ *
+ * 框架先 abort.abort() 让 startAccount promise 自然 resolve，
+ * 再调用 stopAccount 给插件机会做主动清理（关 WebSocket、注销处理器、刷新持久化）。
+ *
+ * 实现策略：
+ *   1. 主动调用 bot.stop() — 比 abort 信号更立刻、不依赖事件循环时机
+ *   2. 注销 approval handler / gateway
+ *   3. 立即返回；剩余资源（typing keepalive 定时器等）由 abort 信号触发收尾
+ */
+export async function stopAccountGracefully(params: {
+  accountId: string;
+  log?: GatewayLogSink;
+}): Promise<void> {
+  const { accountId, log } = params;
+  const gw = getGateway(accountId);
+
+  // 1. 主动停止 bot
+  if (gw) {
+    try {
+      await gw.stop();
+      log?.info(`[qqbot:${accountId}] gateway stopped`);
+    } catch (err) {
+      log?.error(`[qqbot:${accountId}] gateway stop error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // 2. 注销处理器
+  unregisterGateway(accountId);
+  try {
+    unregisterApprovalHandler(accountId);
+  } catch {
+    // ignore — handler 可能没注册过
   }
 }
 

@@ -27,7 +27,7 @@ import { getQQBotRuntime } from './runtime.js';
 import { sendText } from './outbound/outbound-service.js';
 import { sendMedia } from './outbound/media-send.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
-import { startAccountWithCredentialRecovery, logoutAndClearCredentials } from './gateway/lifecycle.js';
+import { startAccountWithCredentialRecovery, logoutAndClearCredentials, stopAccountGracefully } from './gateway/lifecycle.js';
 import { loadCredentialBackup } from './features/credential-backup.js';
 import { isApprovalPayload, approvalStubs } from './features/approval-utils.js';
 import { qqbotOnboardingAdapter } from './features/onboarding.js';
@@ -51,7 +51,9 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     media: true,
     reactions: false,
     threads: false,
-    blockStreaming: true,
+    // 流式由插件层 StreamingController 在 dispatch 阶段按账户配置启用，
+    // 不在框架层强制屏蔽。
+    blockStreaming: false,
   },
   reload: { configPrefixes: ['channels.qqbot'] },
 
@@ -191,6 +193,12 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   // ── 网关 ──
   gateway: {
     startAccount: (ctx) => startAccountWithCredentialRecovery(ctx),
+    stopAccount: async (ctx: { accountId: string; log?: any }) => {
+      await stopAccountGracefully({
+        accountId: ctx.accountId,
+        log: ctx.log,
+      });
+    },
     logoutAccount: (params) => logoutAndClearCredentials(params),
   },
 

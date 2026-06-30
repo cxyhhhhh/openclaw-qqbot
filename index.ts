@@ -40,5 +40,14 @@ export { QQBotGateway } from './src/gateway/index.js';
 export { sendText, sendMedia } from './src/outbound/outbound-service.js';
 export { parseTarget } from './src/outbound/target.js';
 export { dispatchToOpenClaw } from './src/dispatch/index.js';
+export {
+  PersistedRefIndexStore,
+  getPersistedRefIndexStore,
+  flushAllRefIndexStores,
+} from './src/features/ref-index-store.js';
+export {
+  StreamingController,
+  shouldUseStreaming,
+} from './src/outbound/streaming-controller.js';
 export * from './src/types.js';
 export * from './src/config.js';

@@ -72,9 +72,15 @@ export class QQBotGateway {
 
   /**
    * 启动 Bot 连接
+   *
+   * 注意：QQBot.start() 是一个长阻塞调用 — 它会持续 await 直到 transport 断开
+   * （由 abortSignal 触发或 bot.stop() 主动停止）。因此：
+   *   1. 所有事件监听必须在 start() **之前** 注册
+   *   2. abortSignal 必须直接传给 SDK（透传到 SDK 内部的 abortController），
+   *      不能用 addEventListener 后绑 —— 后绑代码永远不会执行
    */
   async start(callbacks?: GatewayCallbacks, signal?: AbortSignal): Promise<void> {
-    // 绑定事件
+    // 1. 事件绑定 — 必须在 bot.start() 之前完成
     this.bot.on('ready', () => {
       this.log.info(`[qqbot:${this.account.accountId}] Gateway ready`);
       callbacks?.onReady?.();
@@ -101,11 +107,9 @@ export class QQBotGateway {
       });
     });
 
-    // 启动 WebSocket 连接
-    await this.bot.start();
-
-    // 中止信号
-    signal?.addEventListener('abort', () => this.stop(), { once: true });
+    // 2. 启动 WebSocket 连接（长阻塞调用）—— signal 直接透传给 SDK
+    //    SDK 内部会监听 signal.abort，触发后停止 transport 并解除阻塞
+    await this.bot.start(signal);
   }
 
   /**

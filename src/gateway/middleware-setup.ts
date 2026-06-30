@@ -23,6 +23,7 @@ import type { ResolvedQQBotAccount } from '../types.js';
 import { buildCommandList } from '../commands/index.js';
 import { attachmentProcessor } from './attachment-middleware.js';
 import { assembleBody } from '../dispatch/body-assembler.js';
+import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 
 export interface MiddlewareSetupOptions {
   /** 获取当前运行时配置 */
@@ -69,8 +70,10 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   // 8. C2C 输入状态指示器
   bot.use(typingIndicator());
 
-  // 9. 引用消息解析
-  bot.use(quoteRef());
+  // 9. 引用消息解析（注入持久化 store，进程重启后引用上下文不丢失）
+  bot.use(quoteRef({
+    store: getPersistedRefIndexStore(account.accountId),
+  }));
 
   // 10. 群历史缓冲
   bot.use(historyBuffer({
