@@ -33,8 +33,18 @@ export interface RuntimeAdapters {
   chunkMarkdownText: ((text: string, limit: number) => string[]) | null;
   /** 远程媒体保存（图片/语音下载） */
   saveRemoteMedia: ((opts: { url: string; subdir?: string; originalFilename?: string }) => Promise<{ filePath: string } | null>) | null;
-  /** 获取当前配置 */
+  /** 获取当前配置快照 */
   getConfig: (() => any) | null;
+  /**
+   * 持久化配置变更（高低版本兼容）。
+   *
+   * 内部优先级：
+   *   1. mutateConfigFile（新版 API，原子操作，支持 afterWrite 策略）
+   *   2. writeConfigFile（旧版 API，整体覆盖）
+   *
+   * 调用方只需传入完整 config 对象，不必关心框架版本差异。
+   */
+  persistConfig: ((nextConfig: any) => Promise<void>) | null;
   /** openclaw 版本 */
   version: string;
 }
@@ -177,6 +187,25 @@ export function resolveRuntimeAdapters(
     ['getConfig'],
   ]);
 
+  // config 持久化：优先 mutateConfigFile（新版，原子操作），fallback writeConfigFile（旧版）
+  const rawMutateConfig = probeFunction(rt, [['config', 'mutateConfigFile']]);
+  const rawWriteConfig = probeFunction(rt, [['config', 'writeConfigFile']]);
+
+  const persistConfig: RuntimeAdapters['persistConfig'] = rawMutateConfig
+    ? async (nextConfig: any) => {
+        // 新版 API：通过 mutate 回调替换整体 config，afterWrite 触发热重载
+        await rawMutateConfig({
+          afterWrite: 'hot-reload',
+          mutate: () => nextConfig,
+        });
+      }
+    : rawWriteConfig
+      ? async (nextConfig: any) => {
+          // 旧版 API：整体覆盖
+          await rawWriteConfig(nextConfig);
+        }
+      : null;
+
   // 日志汇总
   const resolved = [
     inboundRun && 'inboundRun',
@@ -189,6 +218,7 @@ export function resolveRuntimeAdapters(
     chunkMarkdownText && 'chunkMarkdownText',
     saveRemoteMedia && 'saveRemoteMedia',
     getConfig && 'getConfig',
+    persistConfig && `persistConfig(${rawMutateConfig ? 'mutate' : 'write'})`,
   ].filter(Boolean);
 
   log?.info(
@@ -207,6 +237,44 @@ export function resolveRuntimeAdapters(
     chunkMarkdownText,
     saveRemoteMedia,
     getConfig,
+    persistConfig,
     version,
   };
+}
+
+// ── 全局缓存（所有消费者共享同一份 adapters） ──
+
+let _cachedAdapters: RuntimeAdapters | null = null;
+let _cachedRuntimeRef: WeakRef<PluginRuntime> | null = null;
+
+/**
+ * 获取 RuntimeAdapters 的全局缓存版本。
+ *
+ * - 自动基于 runtime 实例的 WeakRef 判断是否需要重新 resolve
+ * - 如果 runtime 被替换（框架热更新、二次 register），自动刷新
+ * - 所有消费者（dispatch / channel / middleware）共用一份，避免重复 probe
+ *
+ * @param rt 当前 PluginRuntime 实例
+ * @param log 可选日志（仅在首次 resolve 或 runtime 变更时输出）
+ */
+export function getAdapters(
+  rt: PluginRuntime,
+  log?: { info: (m: string) => void; debug?: (m: string) => void },
+): RuntimeAdapters {
+  const cached = _cachedRuntimeRef?.deref();
+  if (cached === rt && _cachedAdapters) {
+    return _cachedAdapters;
+  }
+  // runtime 引用变化（首次 / 热更新）→ 重新 resolve
+  _cachedAdapters = resolveRuntimeAdapters(rt, log);
+  _cachedRuntimeRef = new WeakRef(rt);
+  return _cachedAdapters;
+}
+
+/**
+ * 强制清除 adapter 缓存（仅测试用）
+ */
+export function _resetAdaptersCache(): void {
+  _cachedAdapters = null;
+  _cachedRuntimeRef = null;
 }

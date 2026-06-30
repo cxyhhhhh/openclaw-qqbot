@@ -66,7 +66,7 @@ export class QQBotGateway {
 
     // 编排中间件（仅过滤 + 富化，不含业务转发）
     setupMiddlewares(this.bot, account, {
-      getCfg: () => (runtime.config as any)?.current?.() ?? {},
+      getRuntime: () => runtime,
     });
   }
 

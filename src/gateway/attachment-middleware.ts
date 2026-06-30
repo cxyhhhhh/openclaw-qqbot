@@ -20,7 +20,7 @@ import type { MessageAttachment } from '../types.js';
 import { transcribeAudio, resolveSTTConfig } from '../utils/stt.js';
 import { formatVoiceText, formatDuration, type VoiceTranscript, type TranscriptSource } from '../utils/voice-text.js';
 import { getQQBotDataDir, getQQBotMediaDir } from '../utils/platform.js';
-import { resolveRuntimeAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../runtime-adapter/resolve.js';
 
 export { formatVoiceText, formatDuration };
 export type { VoiceTranscript, TranscriptSource };
@@ -40,10 +40,8 @@ export interface ProcessedAttachments {
 }
 
 interface AttachmentMiddlewareOptions {
-  /** 获取当前配置（延迟求值） */
-  getCfg: () => Record<string, unknown>;
-  /** 获取 runtime（用于 channel.media.saveRemoteMedia） */
-  getRuntime?: () => any;
+  /** 获取 runtime */
+  getRuntime: () => any;
 }
 
 /**
@@ -57,11 +55,12 @@ export function attachmentProcessor(opts: AttachmentMiddlewareOptions) {
     const attachments = msg.attachments as MessageAttachment[] | undefined;
 
     if (attachments?.length) {
-      const cfg = opts.getCfg();
+      const runtime = opts.getRuntime();
+      const adapters = getAdapters(runtime);
+      const cfg = (adapters.getConfig?.() ?? {}) as Record<string, unknown>;
       const accountId = (ctx.bot as any).accountId ?? 'default';
       const log = ctx.log;
-      const runtime = opts.getRuntime?.();
-      const mediaSaver = runtime ? resolveRuntimeAdapters(runtime).saveRemoteMedia ?? undefined : undefined;
+      const mediaSaver = adapters.saveRemoteMedia ?? undefined;
       const result = await processAttachments(attachments, cfg, accountId, log, mediaSaver);
 
       if (result.voiceText || result.imageUrls.length > 0 || result.otherInfo || result.localMediaPaths.length > 0) {

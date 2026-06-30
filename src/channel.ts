@@ -24,7 +24,7 @@ import {
   resolveGroupConfig,
 } from './config.js';
 import { getQQBotRuntime } from './runtime.js';
-import { resolveRuntimeAdapters } from './runtime-adapter/resolve.js';
+import { getAdapters } from './runtime-adapter/resolve.js';
 import { sendText } from './outbound/outbound-service.js';
 import { sendMedia } from './outbound/media-send.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
@@ -163,8 +163,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   outbound: {
     deliveryMode: 'direct',
     chunker: (text, limit) => {
-      const rt = getQQBotRuntime();
-      const adapters = resolveRuntimeAdapters(rt);
+      const adapters = getAdapters(getQQBotRuntime());
       if (adapters.chunkMarkdownText) return adapters.chunkMarkdownText(text, limit);
       // fallback（低版本降级）: 按换行边界切分，避免拆断 Markdown 行
       const lines = text.split('\n');

@@ -18,18 +18,7 @@ import { assembleBody, type AssembledBody } from './body-assembler.js';
 import { sendText, sendMedia, getGateway } from '../outbound/outbound-service.js';
 import { deliverReply, ToolMediaCollector, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
 import { StreamingController, shouldUseStreaming } from '../outbound/streaming-controller.js';
-import { resolveRuntimeAdapters, type RuntimeAdapters } from '../runtime-adapter/resolve.js';
-
-// ── 缓存 resolved adapters（per-runtime instance） ──
-let cachedAdapters: RuntimeAdapters | null = null;
-let cachedRuntime: PluginRuntime | null = null;
-
-function getAdapters(runtime: PluginRuntime, log?: GatewayLogSink): RuntimeAdapters {
-  if (cachedRuntime === runtime && cachedAdapters) return cachedAdapters;
-  cachedAdapters = resolveRuntimeAdapters(runtime, log);
-  cachedRuntime = runtime;
-  return cachedAdapters;
-}
+import { getAdapters, type RuntimeAdapters } from '../runtime-adapter/resolve.js';
 
 /**
  * 将经过中间件处理的入站消息转发给 OpenClaw AI

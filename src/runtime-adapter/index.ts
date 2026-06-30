@@ -11,4 +11,4 @@
  */
 
 export { verifyRuntimeContract, type ContractResult } from './contract-check.js';
-export { resolveRuntimeAdapters, type RuntimeAdapters } from './resolve.js';
+export { resolveRuntimeAdapters, getAdapters, type RuntimeAdapters } from './resolve.js';

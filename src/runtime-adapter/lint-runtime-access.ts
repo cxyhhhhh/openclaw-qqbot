@@ -23,11 +23,13 @@ import * as path from 'node:path';
 const SRC_ROOT = path.resolve(import.meta.dirname, '..');
 const ADAPTER_DIR = path.resolve(SRC_ROOT, 'runtime-adapter');
 
-/** 匹配直接使用 runtime.channel / (runtime as any) 的模式 */
+/** 匹配直接使用 runtime.channel / runtime.config / (runtime as any) 的模式 */
 const VIOLATION_PATTERNS: RegExp[] = [
   /runtime\.channel\b/,
+  /runtime\.config\b/,
   /\(runtime\s+as\s+any\)/,
   /channel\??\.(inbound|turn|reply|session|routing|text|media|runtimeContexts)\b/,
+  /config\s+as\s*\{.*writeConfigFile/,
 ];
 
 /** 加白注释标记 */

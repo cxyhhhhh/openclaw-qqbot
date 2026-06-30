@@ -11,6 +11,7 @@ import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { DEFAULT_ACCOUNT_ID, resolveQQBotAccount, applyQQBotAccountConfig } from '../config.js';
 import { getQQBotRuntime } from '../runtime.js';
+import { getAdapters } from '../runtime-adapter/resolve.js';
 import { QQBotGateway, type GatewayLogSink } from './qqbot-gateway.js';
 import { registerGateway, unregisterGateway, getGateway } from '../outbound/outbound-service.js';
 import { saveCredentialBackup, loadCredentialBackup } from '../features/credential-backup.js';
@@ -46,8 +47,10 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
           appId: backup.appId,
           clientSecret: backup.clientSecret,
         });
-        const configApi = runtime.config as { writeConfigFile: (cfg: unknown) => Promise<void> };
-        await configApi.writeConfigFile(restoredCfg);
+        const adapters = getAdapters(runtime);
+        if (adapters.persistConfig) {
+          await adapters.persistConfig(restoredCfg);
+        }
         account = resolveQQBotAccount(restoredCfg, account.accountId);
       } catch (e) {
         log?.error(`[qqbot:${account.accountId}] 凭证恢复失败: ${e}`);
@@ -197,8 +200,10 @@ export async function logoutAndClearCredentials(params: {
   if (changed && nextQQBot) {
     nextCfg.channels = { ...nextCfg.channels, qqbot: nextQQBot };
     const runtime = getQQBotRuntime();
-    const configApi = runtime.config as { writeConfigFile: (cfg: OpenClawConfig) => Promise<void> };
-    await configApi.writeConfigFile(nextCfg);
+    const adapters = getAdapters(runtime);
+    if (adapters.persistConfig) {
+      await adapters.persistConfig(nextCfg);
+    }
   }
 
   const resolved = resolveQQBotAccount(changed ? nextCfg : cfg, accountId);
