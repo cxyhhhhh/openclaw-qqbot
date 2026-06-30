@@ -13,20 +13,34 @@ import { botMe } from './bot-me.js';
 import { botUpgrade } from './bot-upgrade.js';
 import { botStreaming } from './bot-streaming.js';
 import { botClearStorage } from './bot-clear-storage.js';
+import { botLogs } from './bot-logs.js';
+import { botApprove } from './bot-approve.js';
+import { botGroupAlways } from './bot-group-always.js';
+
+export interface CommandBuildOptions {
+  getRuntime: () => any;
+}
 
 /**
  * 构建标准命令列表（匹配后直接回复，不进入 AI）
  */
-export function buildCommandList(account: ResolvedQQBotAccount): SlashCommand[] {
-  return [
-    botHelp(account),
+export function buildCommandList(account: ResolvedQQBotAccount, opts: CommandBuildOptions): SlashCommand[] {
+  const commands: SlashCommand[] = [];
+
+  // help 需要访问完整命令列表，延迟绑定
+  const help = botHelp(account, () => commands);
+  commands.push(
+    help,
     botPing(),
     botVersion(account),
     botMe(),
     botUpgrade(account),
-    botStreaming(account),
+    botLogs(),
+    botStreaming(account, opts.getRuntime),
     botClearStorage(account),
-  ];
+    botApprove(opts.getRuntime),
+    botGroupAlways(account, opts.getRuntime),
+  );
+
+  return commands;
 }
-
-

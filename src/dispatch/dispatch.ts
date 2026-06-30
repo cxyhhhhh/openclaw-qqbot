@@ -193,6 +193,8 @@ export async function dispatchToOpenClaw(
           },
         },
         runDispatch: () => {
+          // 跟踪已发送的 block，final 去重
+          let blockDelivered = false;
           return adapters.dispatchReply!({
             ctx: ctxPayload,
             cfg,
@@ -205,6 +207,16 @@ export async function dispatchToOpenClaw(
                   }
                   log?.warn(`[qqbot:${account.accountId}] streaming fallback to static deliver`);
                 }
+
+                const kind = (info as any)?.kind as string | undefined;
+                if (kind === 'block') {
+                  blockDelivered = true;
+                } else if (kind === 'final' && blockDelivered) {
+                  // block 已发过 → final 跳过
+                  log?.info(`[qqbot:${account.accountId}] skip final deliver (block already sent)`);
+                  return;
+                }
+
                 await deliverReply(payload, info, deliverCtx);
               },
             },

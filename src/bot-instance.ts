@@ -18,6 +18,10 @@ export function setOpenClawVersion(version: string): void {
   _openclawVersion = version;
 }
 
+export function getOpenClawVersion(): string {
+  return _openclawVersion;
+}
+
 export function buildUserAgent(): string {
   return `openclaw-qqbot/${PLUGIN_VERSION} openclaw/${_openclawVersion}`;
 }

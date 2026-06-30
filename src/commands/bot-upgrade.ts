@@ -1,24 +1,54 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
+import { getPackageVersion } from '../utils/pkg-version.js';
+import { getUpdateInfo } from '../features/update-checker.js';
 
-/** /bot-upgrade — 插件热升级 */
+const PLUGIN_VERSION = getPackageVersion();
+const DEFAULT_UPGRADE_URL = 'https://docs.qq.com/doc/DSGxOZk1oVnVKVkpq';
+const GITHUB_URL = 'https://github.com/nicepkg/openclaw';
+
+/** /bot-upgrade — 检查更新并查看升级指引 */
 export function botUpgrade(account: ResolvedQQBotAccount): SlashCommand {
   return {
     name: 'bot-upgrade',
-    description: '插件升级',
+    description: '检查更新并查看升级指引',
+    scope: 'c2c',
+    usage: [
+      '/bot-upgrade              检查是否有新版本',
+    ].join('\n'),
     handler: async () => {
-      const config = account.config;
-      const upgradeMode = config.upgradeMode ?? 'hot-reload';
-      const upgradeUrl = config.upgradeUrl ??
-        'https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg';
+      const url = account.config.upgradeUrl ?? DEFAULT_UPGRADE_URL;
+      const info = await getUpdateInfo();
 
-      if (upgradeMode === 'doc') {
-        return `📖 升级文档：${upgradeUrl}`;
+      if (info.checkedAt === 0) {
+        return '⏳ 版本检查中，请稍后再试';
       }
 
-      // hot-reload 模式
-      const pkgName = config.upgradePkg ?? '@tencent-connect/openclaw-qqbot';
-      return `🔄 正在检查更新 (${pkgName})...\n💡 热升级功能迁移中，请暂时使用命令行升级：\n\`npx openclaw upgrade qqbot\``;
+      if (info.error) {
+        return [
+          '❌ 主机网络访问异常，无法检查更新',
+          '',
+          `查看升级指引：[点击查看](${url})`,
+        ].join('\n');
+      }
+
+      if (!info.hasUpdate) {
+        return [
+          `✅ 当前已是最新版本 v${PLUGIN_VERSION}`,
+          '',
+          `项目地址：[GitHub](${GITHUB_URL})`,
+        ].join('\n');
+      }
+
+      return [
+        '🆕 发现新版本',
+        '',
+        `当前版本：**v${PLUGIN_VERSION}**`,
+        `最新版本：**v${info.latest}**`,
+        '',
+        `📖 升级指引：[点击查看](${url})`,
+        `🌟 官方 GitHub 仓库：[点击前往](${GITHUB_URL})`,
+      ].join('\n');
     },
   };
 }

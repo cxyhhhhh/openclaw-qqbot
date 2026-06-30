@@ -95,6 +95,6 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   }));
 
   // 13. 斜杠命令（命令被匹配后直接回复，不再向下传递）
-  const slash = slashCommand({ commands: buildCommandList(account) });
+  const slash = slashCommand({ commands: buildCommandList(account, { getRuntime: opts.getRuntime }) });
   bot.use(slash.middleware);
 }
