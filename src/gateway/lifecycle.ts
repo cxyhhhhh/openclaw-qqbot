@@ -49,7 +49,7 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
         });
         const adapters = getAdapters(runtime);
         if (adapters.persistConfig) {
-          await adapters.persistConfig(restoredCfg);
+          await adapters.persistConfig(() => restoredCfg);
         }
         account = resolveQQBotAccount(restoredCfg, account.accountId);
       } catch (e) {
@@ -202,7 +202,7 @@ export async function logoutAndClearCredentials(params: {
     const runtime = getQQBotRuntime();
     const adapters = getAdapters(runtime);
     if (adapters.persistConfig) {
-      await adapters.persistConfig(nextCfg);
+      await adapters.persistConfig(() => nextCfg);
     }
   }
 

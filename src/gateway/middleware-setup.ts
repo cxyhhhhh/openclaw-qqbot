@@ -24,6 +24,7 @@ import { buildCommandList } from '../commands/index.js';
 import { attachmentProcessor } from './attachment-middleware.js';
 import { assembleBody } from '../dispatch/body-assembler.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
+import { createPolicyInjector } from './policy-injector.js';
 
 export interface MiddlewareSetupOptions {
   /** 获取 runtime */
@@ -50,51 +51,46 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
     }));
   }
 
-  // 4. 群聊 @bot 门控（含 ignoreOtherMentions — @了其他人但未@bot 时直接丢弃）
-  const defaultGroup = config.groups?.['*'];
-  bot.use(mentionGate({
-    requireMentionInGroup: defaultGroup?.requireMention ?? true,
-    ignoreOtherMentions: defaultGroup?.ignoreOtherMentions ?? false,
-  }));
+  // 4. 动态策略注入 — 每条消息解析群配置注入 ctx.state.policy
+  //    后续 mentionGate / historyBuffer 自动从 ctx.state.policy 读取动态策略
+  bot.use(createPolicyInjector(account));
 
-  // 5. 内容清洗（去 @marker、表情标签、多余空白）
+  // 5. 群聊 @bot 门控（从 ctx.state.policy.group 读取动态配置）
+  bot.use(mentionGate());
+
+  // 6. 内容清洗（去 @marker、表情标签、多余空白）
   bot.use(contentSanitizer());
 
-  // 6. 三层限流（sender / group / global）
+  // 7. 三层限流（sender / group / global）
   bot.use(rateLimiter());
 
-  // 7. 并发串行控制（同用户/群顺序处理）
+  // 8. 并发串行控制（同用户/群顺序处理）
   bot.use(concurrencyGuard());
 
-  // 8. C2C 输入状态指示器
+  // 9. C2C 输入状态指示器
   bot.use(typingIndicator());
 
-  // 9. 引用消息解析（注入持久化 store，进程重启后引用上下文不丢失）
+  // 10. 引用消息解析（注入持久化 store，进程重启后引用上下文不丢失）
   bot.use(quoteRef({
     store: getPersistedRefIndexStore(account.accountId),
   }));
 
-  // 10. 群历史缓冲
-  bot.use(historyBuffer({
-    limit: defaultGroup?.historyLimit ?? 50,
-  }));
+  // 11. 群历史缓冲（limit 从 ctx.state.policy.group.historyLimit 读取）
+  bot.use(historyBuffer());
 
-  // 11. 附件处理（语音 STT 转录 + 图片/文件下载）
-  bot.use(attachmentProcessor({ getRuntime: opts.getRuntime  }));
+  // 12. 附件处理（语音 STT 转录 + 图片/文件下载）
+  bot.use(attachmentProcessor({ getRuntime: opts.getRuntime }));
 
-  // 12. 上下文组装（构建框架规约的 body）
-  // 注入自定义 formatter，调用 assembleBody 完整组装并缓存到 ctx.state
+  // 13. 上下文组装（构建框架规约的 body）
   bot.use(envelopeFormatter({
     format: (ctx) => {
       const assembled = assembleBody(ctx, ctx.message as never, account);
-      // 缓存完整组装结果，供 dispatch 阶段直接消费（避免重算）
       (ctx.state as Record<string, unknown>).assembledBody = assembled;
-      // SDK 类型契约要求 envelope 是 string，返回 agentBody（AI 实际消费的字符串）
       return assembled.agentBody;
     },
   }));
 
-  // 13. 斜杠命令（命令被匹配后直接回复，不再向下传递）
+  // 14. 斜杠命令（命令被匹配后直接回复，不再向下传递）
   const slash = slashCommand({ commands: buildCommandList(account, { getRuntime: opts.getRuntime }) });
   bot.use(slash.middleware);
 }

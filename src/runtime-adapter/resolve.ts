@@ -44,7 +44,13 @@ export interface RuntimeAdapters {
    *
    * 调用方只需传入完整 config 对象，不必关心框架版本差异。
    */
-  persistConfig: ((nextConfig: any) => Promise<void>) | null;
+  /**
+   * 持久化配置变更（高低版本兼容）。
+   *
+   * 接受一个 mutator 回调，接收当前 config 对象（可变），
+   * 可直接修改或返回新对象。适配器负责确保写入和热重载。
+   */
+  persistConfig: ((mutator: (cfg: any) => any) => Promise<void>) | null;
   /** openclaw 版本 */
   version: string;
 }
@@ -192,17 +198,19 @@ export function resolveRuntimeAdapters(
   const rawWriteConfig = probeFunction(rt, [['config', 'writeConfigFile']]);
 
   const persistConfig: RuntimeAdapters['persistConfig'] = rawMutateConfig
-    ? async (nextConfig: any) => {
-        // 新版 API：通过 mutate 回调替换整体 config，afterWrite 触发热重载
+    ? async (mutator: (cfg: any) => any) => {
+        // 新版 API：mutate 回调接收当前 config，可直接修改或返回新对象
         await rawMutateConfig({
           afterWrite: 'hot-reload',
-          mutate: () => nextConfig,
+          mutate: mutator,
         });
       }
-    : rawWriteConfig
-      ? async (nextConfig: any) => {
-          // 旧版 API：整体覆盖
-          await rawWriteConfig(nextConfig);
+    : rawWriteConfig && getConfig
+      ? async (mutator: (cfg: any) => any) => {
+          // 旧版 API：先读取当前 config → 应用 mutator → 整体写入
+          const current = JSON.parse(JSON.stringify(getConfig()));
+          mutator(current);
+          await rawWriteConfig(current);
         }
       : null;
 

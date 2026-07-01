@@ -74,6 +74,12 @@ export interface QQBotAccountConfig {
   groupAllowFrom?: string[];
   /** 群配置映射（按 groupOpenid 索引，"*" 为默认） */
   groups?: Record<string, GroupConfig>;
+  /**
+   * 群消息是否默认需要 @机器人才响应（默认 true）
+   * 优先级低于 groups.{groupId}.requireMention 和 groups."*".requireMention
+   * 设为 false 时，所有群默认无需 @ 即触发回复（仍可被群级配置覆盖）
+   */
+  defaultRequireMention?: boolean;
   /** 系统提示词，会添加在用户消息前面 */
   systemPrompt?: string;
   /** 图床服务器公网地址，用于发送图片，例如 http://your-ip:18765 */
