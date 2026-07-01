@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getBotForAccount } from "../bot-instance.js";
+import type { PluginLogger } from '../utils/plugin-logger.js';
 import type { InlineKeyboard, KeyboardButton } from "../types.js";
 
 // ─── 动态加载 gateway-runtime（兼容不同安装环境） ────────
@@ -136,11 +137,7 @@ export interface QQBotApprovalHandlerOpts {
   clientSecret: string;
   cfg: OpenClawConfig;
   gatewayUrl?: string;
-  log?: {
-    info: (msg: string) => void;
-    error: (msg: string) => void;
-    debug?: (msg: string) => void;
-  };
+  log?: PluginLogger;
 }
 
 type ApprovalKind = "exec" | "plugin";

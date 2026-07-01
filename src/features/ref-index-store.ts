@@ -17,7 +17,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { RefEntry, RefIndexStore } from '@tencent-connect/qqbot-nodejs';
 import { getQQBotDataDir } from '../utils/platform.js';
-import { getLogger } from '../runtime.js';
+import { createPluginLogger } from '../utils/plugin-logger.js';
+const log = createPluginLogger({ prefix: '[ref-index]' });
+
 
 // ── 常量 ──
 
@@ -107,8 +109,8 @@ export class PersistedRefIndexStore implements RefIndexStore {
         this.compactSync();
       }
     } catch (err) {
-      getLogger().error(
-        `[qqbot:ref-index] init failed: ${err instanceof Error ? err.message : String(err)}`,
+      log.error(
+        `init failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       this.initialized = true;
@@ -155,8 +157,8 @@ export class PersistedRefIndexStore implements RefIndexStore {
         await this.compact();
       }
     } catch (err) {
-      getLogger().error(
-        `[qqbot:ref-index] append failed: ${err instanceof Error ? err.message : String(err)}`,
+      log.error(
+        `append failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -177,12 +179,12 @@ export class PersistedRefIndexStore implements RefIndexStore {
       await fs.promises.writeFile(tmpPath, content, 'utf8');
       await fs.promises.rename(tmpPath, this.filePath);
       this.diskLineCount = lines.length;
-      getLogger().info?.(
-        `[qqbot:ref-index] compacted to ${lines.length} entries`,
+      log.info(
+        `compacted to ${lines.length} entries`,
       );
     } catch (err) {
-      getLogger().error(
-        `[qqbot:ref-index] compact failed: ${err instanceof Error ? err.message : String(err)}`,
+      log.error(
+        `compact failed: ${err instanceof Error ? err.message : String(err)}`,
       );
       // 清理可能残留的 tmp 文件
       try {
@@ -209,8 +211,8 @@ export class PersistedRefIndexStore implements RefIndexStore {
       fs.renameSync(tmpPath, this.filePath);
       this.diskLineCount = lines.length;
     } catch (err) {
-      getLogger().error(
-        `[qqbot:ref-index] compactSync failed: ${err instanceof Error ? err.message : String(err)}`,
+      log.error(
+        `compactSync failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -259,6 +261,7 @@ const stores = new Map<string, PersistedRefIndexStore>();
  *
  * 每个账户独立存储文件，避免多账户混用同一个 refIdx 命名空间。
  */
+
 export function getPersistedRefIndexStore(accountId: string): PersistedRefIndexStore {
   let store = stores.get(accountId);
   if (!store) {

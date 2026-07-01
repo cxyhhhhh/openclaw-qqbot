@@ -1,4 +1,7 @@
-import { getLogger } from "../runtime.js";
+import { createPluginLogger } from "../utils/plugin-logger.js";
+
+const log = createPluginLogger({ prefix: '[proactive]' });
+
 /**
  * QQ Bot 主动发送消息模块
  * 
@@ -123,7 +126,7 @@ function loadKnownUsers(): Map<string, KnownUser> {
       cacheLastModified = fs.statSync(KNOWN_USERS_FILE).mtimeMs;
     }
   } catch (err) {
-    getLogger().error(`[qqbot:proactive] Failed to load known users: ${err}`);
+    log.error(`Failed to load known users: ${err}`);
   }
 
   knownUsersCache = users;
@@ -141,7 +144,7 @@ function saveKnownUsers(users: Map<string, KnownUser>): void {
     cacheLastModified = Date.now();
     knownUsersCache = users;
   } catch (err) {
-    getLogger().error(`[qqbot:proactive] Failed to save known users: ${err}`);
+    log.error(`Failed to save known users: ${err}`);
   }
 }
 
@@ -166,7 +169,7 @@ export function recordKnownUser(user: Omit<KnownUser, "firstInteractionAt">): vo
   });
   
   saveKnownUsers(users);
-  getLogger().info(`[qqbot:proactive] Recorded user: ${key}`);
+  log.info(`Recorded user: ${key}`);
 }
 
 /**
@@ -317,9 +320,9 @@ export async function sendProactive(
     if (imageUrl) {
       try {
         await bot.sendImage(target, { url: imageUrl });
-        getLogger().info(`[qqbot:proactive] Sent image to ${type}:${to}`);
+        log.info(`Sent image to ${type}:${to}`);
       } catch (err) {
-        getLogger().error(`[qqbot:proactive] Failed to send image: ${err}`);
+        log.error(`Failed to send image: ${err}`);
       }
     }
     
@@ -332,7 +335,7 @@ export async function sendProactive(
     }
 
     const result = await bot.sendText(target, text);
-    getLogger().info(`[qqbot:proactive] Sent message to ${type}:${to}, id: ${result.id}`);
+    log.info(`Sent message to ${type}:${to}, id: ${result.id}`);
     
     return {
       success: true,
@@ -341,7 +344,7 @@ export async function sendProactive(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    getLogger().error(`[qqbot:proactive] Failed to send message: ${message}`);
+    log.error(`Failed to send message: ${message}`);
     
     return {
       success: false,

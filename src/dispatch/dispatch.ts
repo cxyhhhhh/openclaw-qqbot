@@ -7,12 +7,12 @@
  *
  * 架构说明：
  * - 所有 runtime.channel.* 访问均通过 runtime-adapter 隔离
- * - log: per-account 日志（从 ctx.log 透传）
+ * - log: 前缀由 PluginLogger + 框架自动注入，消息体不重复 accountId
  */
 import type { MiddlewareContext, QQBotInboundMessage } from '@tencent-connect/qqbot-nodejs';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import type { ResolvedQQBotAccount } from '../types.js';
-import type { GatewayLogSink } from '../gateway/qqbot-gateway.js';
+import type { PluginLogger } from '../utils/plugin-logger.js';
 import { buildEnvelope } from './envelope-builder.js';
 import { assembleBody, type AssembledBody } from './body-assembler.js';
 import { sendText, sendMedia, getGateway } from '../outbound/outbound-service.js';
@@ -29,30 +29,27 @@ export async function dispatchToOpenClaw(
   msg: QQBotInboundMessage,
   account: ResolvedQQBotAccount,
   runtime: PluginRuntime,
-  log?: GatewayLogSink,
+  log?: PluginLogger,
 ): Promise<void> {
   const adapters = getAdapters(runtime, log);
   const envelope = buildEnvelope(ctx, msg, account);
 
-  // ── Guard: 必需 API 不可用 → 仅记录错误日志 ──
   if (!adapters.inboundRun) {
-    log?.error(`[qqbot:${account.accountId}] runtime adapter inboundRun not available (openclaw=${adapters.version})`);
+    log?.error(`runtime adapter inboundRun not available (openclaw=${adapters.version})`);
     return;
   }
 
   if (!adapters.dispatchReply) {
-    log?.error(`[qqbot:${account.accountId}] runtime adapter dispatchReply not available (openclaw=${adapters.version})`);
+    log?.error(`runtime adapter dispatchReply not available (openclaw=${adapters.version})`);
     return;
   }
 
-  // 优先使用 envelopeFormatter 中间件缓存的组装结果，fallback 即时组装
   const assembled: AssembledBody =
     ((ctx.state as Record<string, unknown>).assembledBody as AssembledBody | undefined) ??
     assembleBody(ctx, msg, account);
 
   const cfg = adapters.getConfig?.() ?? {};
 
-  // 解析路由（可选 — 降级为默认路由）
   const route = adapters.resolveAgentRoute?.({
     cfg,
     channel: 'qqbot',
@@ -67,11 +64,9 @@ export async function dispatchToOpenClaw(
   const agentId = route.agentId ?? 'default';
   const storePath = adapters.resolveStorePath?.((cfg as any)?.session?.store, { agentId }) ?? '';
 
-  // Web UI Body 渲染
   const isGroup = envelope.chatScope === 'group';
   const webBody = renderWebBody(adapters, cfg, assembled, msg, isGroup);
 
-  // 构建框架标准 MsgContext（adapter 层已适配新旧 API，业务代码无需感知版本）
   const ctxPayload = adapters.buildInboundContext?.({
     channel: 'qqbot',
     accountId: route.accountId,
@@ -102,7 +97,6 @@ export async function dispatchToOpenClaw(
     },
   });
 
-  // 注入 MediaPaths / MediaUrls
   const processed = ctx.state.processedAttachments as any;
   if (processed?.localMediaPaths?.length) {
     (ctxPayload as any).MediaPaths = processed.localMediaPaths;
@@ -115,10 +109,8 @@ export async function dispatchToOpenClaw(
     (ctxPayload as any).MediaUrl = processed.remoteMediaUrls[0];
   }
 
-  // TTS 能力探测
-  const ttsRuntime = (runtime as any)?.tts ?? (runtime as any)?.channel?.runtimeContexts?.get?.('tts'); // @adapter-bypass: TTS 是插件扩展点，非核心 channel API
+  const ttsRuntime = (runtime as any)?.tts ?? (runtime as any)?.channel?.runtimeContexts?.get?.('tts');
 
-  // 出站文本合并防抖（按账户配置启用）
   const debounceConfig = account.config?.deliverDebounce;
   const debouncer = debounceConfig?.enabled !== false
     ? new DeliverDebouncer(debounceConfig, (targetId, mergedText) =>
@@ -126,7 +118,6 @@ export async function dispatchToOpenClaw(
       )
     : undefined;
 
-  // 构建 deliver context
   const deliverCtx: DeliverContext = {
     qualifiedTarget,
     accountId: account.accountId,
@@ -150,24 +141,22 @@ export async function dispatchToOpenClaw(
     audioFileToSilkBase64: ttsRuntime?.audioFileToSilkBase64
       ? (audioPath: string) => ttsRuntime.audioFileToSilkBase64(audioPath)
       : undefined,
-    log: log ? { info: log.info, error: log.error, debug: log.debug } : undefined,
+    log: log?.child('deliver'),
   };
 
-  // ── 流式路由：账户开启 streaming + C2C 时启用 ──
   const streamingEnabled = shouldUseStreaming(
     account,
     envelope.chatScope === 'group' ? 'group' : 'c2c',
   );
 
   const streamingController = streamingEnabled
-    ? createStreamingController(envelope, account, log)
+    ? createStreamingController(envelope, account, log?.child('streaming'))
     : null;
 
   if (streamingController) {
-    log?.info(`[qqbot:${account.accountId}] streaming enabled for ${envelope.senderId}`);
+    log?.info(`streaming enabled for ${envelope.senderId}`);
   }
 
-  // ── 通过 adapters.inboundRun 分发消息给 AI ──
   await adapters.inboundRun({
     channel: 'qqbot',
     accountId: route.accountId,
@@ -189,11 +178,10 @@ export async function dispatchToOpenClaw(
         recordInboundSession: adapters.recordInboundSession,
         record: {
           onRecordError: (err: unknown) => {
-            log?.error(`[qqbot:${account.accountId}] Session record error: ${err}`);
+            log?.error(`Session record error: ${err}`);
           },
         },
         runDispatch: () => {
-          // 跟踪已发送的 block，final 去重
           let blockDelivered = false;
           return adapters.dispatchReply!({
             ctx: ctxPayload,
@@ -205,15 +193,14 @@ export async function dispatchToOpenClaw(
                   if (!streamingController.shouldFallbackToStatic) {
                     return;
                   }
-                  log?.warn(`[qqbot:${account.accountId}] streaming fallback to static deliver`);
+                  log?.warn(`streaming fallback to static deliver`);
                 }
 
                 const kind = (info as any)?.kind as string | undefined;
                 if (kind === 'block') {
                   blockDelivered = true;
                 } else if (kind === 'final' && blockDelivered) {
-                  // block 已发过 → final 跳过
-                  log?.info(`[qqbot:${account.accountId}] skip final deliver (block already sent)`);
+                  log?.info(`skip final deliver (block already sent)`);
                   return;
                 }
 
@@ -233,27 +220,23 @@ export async function dispatchToOpenClaw(
     },
   });
 
-  // 终态保护
   if (streamingController && !streamingController.isTerminal) {
     await streamingController.finalize();
   }
 
-  // 刷新 debounce 缓冲区中的剩余文本
   if (debouncer) {
     await debouncer.flushAll();
   }
 }
 
-// ── 流式控制器工厂 ──
-
 function createStreamingController(
   envelope: ReturnType<typeof buildEnvelope>,
   account: ResolvedQQBotAccount,
-  log?: GatewayLogSink,
+  log?: PluginLogger,
 ): StreamingController | null {
   const gw = getGateway(account.accountId);
   if (!gw) {
-    log?.error(`[qqbot:${account.accountId}] cannot enable streaming — gateway not running`);
+    log?.error(`cannot enable streaming — gateway not running`);
     return null;
   }
   return new StreamingController({
@@ -268,8 +251,6 @@ function createStreamingController(
     log,
   });
 }
-
-// ── Web UI Body 渲染 ──
 
 function renderWebBody(
   adapters: RuntimeAdapters,

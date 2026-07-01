@@ -15,6 +15,7 @@
  */
 
 import type { ReplyTarget, StreamSession } from '@tencent-connect/qqbot-nodejs';
+import type { PluginLogger } from '../utils/plugin-logger.js';
 import type { QQBotGateway } from '../gateway/qqbot-gateway.js';
 
 // ── 类型 ──
@@ -31,12 +32,7 @@ export interface StreamingControllerDeps {
   /** 用于被动回复的入站消息 ID */
   replyToId: string;
   /** 日志 */
-  log?: {
-    info: (msg: string) => void;
-    error: (msg: string) => void;
-    warn?: (msg: string) => void;
-    debug?: (msg: string) => void;
-  };
+  log?: PluginLogger;
   /** 节流毫秒（透传给 SDK StreamSession） */
   throttleMs?: number;
 }

@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotGateway } from '../gateway/index.js';
+import type { PluginLogger } from '../utils/plugin-logger.js';
 import { getGateway } from './outbound-service.js';
 import { parseTarget } from './target.js';
 import {
@@ -43,7 +44,7 @@ export interface SendMediaParams {
   /** 账户 ID */
   accountId: string;
   /** 日志 */
-  log?: { info: (m: string) => void; error: (m: string) => void; warn?: (m: string) => void; debug?: (m: string) => void };
+  log?: PluginLogger;
 }
 
 export interface SendMediaResult {
@@ -71,14 +72,14 @@ export async function sendMedia(params: SendMediaParams): Promise<SendMediaResul
   const { source, accountId, log } = params;
 
   if (!source) {
-    log?.error?.('[sendMedia] source is empty!');
+    log?.error('[sendMedia] source is empty!');
     return { error: 'sendMedia: source is required' };
   }
 
   // 1. 安全校验 + 路径规范化
   const resolved = resolveMediaPath(source, log);
   if (!resolved.ok) {
-    log?.error?.(`[sendMedia] resolveMediaPath failed: ${resolved.error}`);
+    log?.error(`[sendMedia] resolveMediaPath failed: ${resolved.error}`);
     return { error: resolved.error };
   }
 
@@ -153,7 +154,7 @@ function resolveMediaPath(source: string, log?: SendMediaParams['log']): Resolve
   });
 
   if (!allowed) {
-    log?.warn?.(`[sendMedia] Path not in allowed directory: ${real}`);
+    log?.warn(`[sendMedia] Path not in allowed directory: ${real}`);
     // 宽松模式：仍然允许发送，但记录警告
     // 严格模式可取消下面这行，改为 return { ok: false, error: ... }
   }
@@ -196,7 +197,7 @@ async function sendVoiceMedia(
     return { messageId: result.id };
   } catch (err) {
     // 语音失败 → fallback 到文件发送
-    params.log?.warn?.(`[sendMedia] sendVoice failed (${formatErr(err)}), falling back to sendFile`);
+    params.log?.warn(`[sendMedia] sendVoice failed (${formatErr(err)}), falling back to sendFile`);
     try {
       const fileName = path.basename(source);
       const fallback = await gw.sendFile(target, source, {

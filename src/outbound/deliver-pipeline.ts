@@ -15,6 +15,7 @@
 import { sendMedia } from './media-send.js';
 import type { MediaKind, SendResult } from './outbound-service.js';
 import type { DeliverDebouncer } from './debounce.js';
+import type { PluginLogger } from '../utils/plugin-logger.js';
 
 // ── 类型 ──
 
@@ -48,7 +49,7 @@ export interface DeliverContext {
   /** 运行时配置 */
   cfg?: unknown;
   /** 日志 */
-  log?: { info: (m: string) => void; error: (m: string) => void; debug?: (m: string) => void };
+  log?: PluginLogger;
 }
 
 /**
@@ -131,7 +132,7 @@ async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void>
       source: url,
       replyToId: ctx.replyToId,
       accountId: ctx.accountId,
-      log: ctx.log ? { ...ctx.log, warn: ctx.log.info } : undefined,
+      log: ctx.log,
     });
     if (result.error) {
       ctx.log?.error(`[deliver:media] ${result.error}`);

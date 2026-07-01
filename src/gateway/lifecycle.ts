@@ -12,7 +12,9 @@ import type { ResolvedQQBotAccount } from '../types.js';
 import { DEFAULT_ACCOUNT_ID, resolveQQBotAccount, applyQQBotAccountConfig } from '../config.js';
 import { getQQBotRuntime } from '../runtime.js';
 import { getAdapters } from '../runtime-adapter/resolve.js';
-import { QQBotGateway, type GatewayLogSink } from './qqbot-gateway.js';
+import { QQBotGateway } from './qqbot-gateway.js';
+import { createPluginLogger } from '../utils/plugin-logger.js';
+import type { PluginLogger } from '../utils/plugin-logger.js';
 import { registerGateway, unregisterGateway, getGateway } from '../outbound/outbound-service.js';
 import { saveCredentialBackup, loadCredentialBackup } from '../features/credential-backup.js';
 import { startImageServer, isImageServerRunning } from '../features/image-server.js';
@@ -23,7 +25,11 @@ export interface StartAccountContext {
   account: ResolvedQQBotAccount;
   abortSignal?: AbortSignal;
   cfg: any;
-  log?: GatewayLogSink;
+  /**
+   * 框架传入的基础 logger（无 child 方法）。内部会自动包装为 PluginLogger。
+   * 写日志的优先级：info > warn > error > debug，方法均为必选。
+   */
+  log?: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void; debug: (msg: string) => void };
   getStatus: () => Record<string, unknown>;
   setStatus: (s: Record<string, unknown>) => void;
   [key: string]: unknown;
@@ -34,7 +40,11 @@ export interface StartAccountContext {
  */
 export async function startAccountWithCredentialRecovery(ctx: StartAccountContext): Promise<void> {
   let { account } = ctx;
-  const { abortSignal, log, cfg } = ctx;
+  const { abortSignal, cfg } = ctx;
+  const log: PluginLogger = createPluginLogger({
+    prefix: `[${account.accountId}]`,
+    ...(ctx.log?.info ? { output: ctx.log as PluginLogger } : {}),
+  });
   const runtime = getQQBotRuntime();
 
   // 凭证恢复：配置中 appId/secret 为空时尝试从暂存文件恢复
@@ -89,7 +99,7 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
 /**
  * Gateway ready 后初始化各 feature 模块
  */
-function initFeatures(account: ResolvedQQBotAccount, cfg: any, log?: GatewayLogSink): void {
+function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: PluginLogger): void {
   // 1. 图片代理服务器（仅首次启动）
   if (account.imageServerBaseUrl && !isImageServerRunning()) {
     try {
@@ -136,7 +146,7 @@ function initFeatures(account: ResolvedQQBotAccount, cfg: any, log?: GatewayLogS
  */
 export async function stopAccountGracefully(params: {
   accountId: string;
-  log?: GatewayLogSink;
+  log?: PluginLogger;
 }): Promise<void> {
   const { accountId, log } = params;
   const gw = getGateway(accountId);

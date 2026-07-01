@@ -27,6 +27,7 @@ import { getQQBotRuntime } from './runtime.js';
 import { getAdapters } from './runtime-adapter/resolve.js';
 import { sendText } from './outbound/outbound-service.js';
 import { sendMedia } from './outbound/media-send.js';
+import { createPluginLogger } from './utils/plugin-logger.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
 import { startAccountWithCredentialRecovery, logoutAndClearCredentials, stopAccountGracefully } from './gateway/lifecycle.js';
 import { loadCredentialBackup } from './features/credential-backup.js';
@@ -52,8 +53,6 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     media: true,
     reactions: false,
     threads: false,
-    // 流式由插件层 StreamingController 在 dispatch 阶段按账户配置启用，
-    // 不在框架层强制屏蔽。
     blockStreaming: false,
   },
   reload: { configPrefixes: ['channels.qqbot'] },
@@ -199,7 +198,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         text,
         replyToId,
         accountId: resolvedAccountId,
-        log: log ? { info: log.info, error: log.error, warn: log.warn, debug: log.debug } : undefined,
+        log: log ? createPluginLogger({ output: log }) : undefined,
       });
       if (result.error) {
         log?.error(`[qqbot:outbound.sendMedia] failed: ${result.error}`);

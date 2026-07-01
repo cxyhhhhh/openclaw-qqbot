@@ -9,6 +9,7 @@
  */
 
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
+import type { PluginLogger } from '../utils/plugin-logger.js';
 
 // ── 类型 ──
 
@@ -104,7 +105,7 @@ function probeValue(rt: any, paths: ProbePath[]): any {
  */
 export function resolveRuntimeAdapters(
   rt: PluginRuntime,
-  log?: { info: (m: string) => void; debug?: (m: string) => void },
+  log?: PluginLogger,
 ): RuntimeAdapters {
   const version = (rt as any).version ?? 'unknown';
 
@@ -267,7 +268,7 @@ let _cachedRuntimeRef: WeakRef<PluginRuntime> | null = null;
  */
 export function getAdapters(
   rt: PluginRuntime,
-  log?: { info: (m: string) => void; debug?: (m: string) => void },
+  log?: PluginLogger,
 ): RuntimeAdapters {
   const cached = _cachedRuntimeRef?.deref();
   if (cached === rt && _cachedAdapters) {
