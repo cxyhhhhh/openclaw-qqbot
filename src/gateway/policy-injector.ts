@@ -10,7 +10,7 @@
  */
 import type { Middleware } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
-import { resolveGroupConfig } from './group-config.js';
+import { resolveGroupConfigFromAccount } from '../config.js';
 
 /**
  * 创建 policy injector 中间件。
@@ -45,7 +45,7 @@ export function createPolicyInjector(account: ResolvedQQBotAccount): Middleware 
 
     if (scope === 'group') {
       const groupOpenid = msg.groupOpenid ?? '';
-      const groupCfg = resolveGroupConfig(account, groupOpenid);
+      const groupCfg = resolveGroupConfigFromAccount(account, groupOpenid);
       policy.group = {
         requireMention: groupCfg.requireMention,
         ignoreOtherMentions: groupCfg.ignoreOtherMentions,

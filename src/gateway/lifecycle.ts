@@ -56,7 +56,7 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
         const restoredCfg = applyQQBotAccountConfig(cfg, account.accountId, {
           appId: backup.appId,
           clientSecret: backup.clientSecret,
-        });
+            });
         const adapters = getAdapters(runtime);
         if (adapters.persistConfig) {
           await adapters.persistConfig(() => restoredCfg);
@@ -82,10 +82,12 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
           running: true,
           connected: true,
           lastConnectedAt: Date.now(),
-        });
+            });
 
         // ── Features 初始化（gateway ready 后触发）──
-        initFeatures(account, cfg, log);
+        initFeatures(account, cfg, log).catch((e) => {
+          log?.error(`[qqbot:${account.accountId}] initFeatures error: ${e}`);
+            });
       },
       onError: (error) => {
         log?.error(`[qqbot:${account.accountId}] Gateway error: ${error.message}`);
@@ -99,7 +101,7 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
 /**
  * Gateway ready 后初始化各 feature 模块
  */
-function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: PluginLogger): void {
+async function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: PluginLogger): Promise<void> {
   // 1. 图片代理服务器（仅首次启动）
   if (account.imageServerBaseUrl && !isImageServerRunning()) {
     try {
@@ -113,25 +115,24 @@ function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: PluginLogger
   // 2. 版本更新检测（后台预热，fire-and-forget）
   triggerUpdateCheck(log);
 
-  // 3. 审批处理器（仅在未注册时创建，resumed 不重复初始化）
-  if (!getApprovalHandler(account.accountId)) {
-    try {
-      const handler = new QQBotApprovalHandler({
-        accountId: account.accountId,
-        appId: account.appId,
-        clientSecret: account.clientSecret,
-        cfg,
-        log,
-      });
-      registerApprovalHandler(account.accountId, handler);
-      handler.start().catch((e) => {
-        log?.error(`[qqbot:${account.accountId}] Approval handler start failed: ${e}`);
-      });
-      log?.info(`[qqbot:${account.accountId}] Approval handler registered`);
-    } catch (e) {
-      // 旧版框架无 gateway-runtime 时会抛出，降级为不可用
-      log?.debug?.(`[qqbot:${account.accountId}] Approval handler not available: ${e}`);
-    }
+  const existing = getApprovalHandler(account.accountId);
+  if (existing) {
+    await existing.stop();
+    unregisterApprovalHandler(account.accountId);
+  }
+  try {
+    const handler = new QQBotApprovalHandler({
+      accountId: account.accountId,
+      appId: account.appId,
+      clientSecret: account.clientSecret,
+      cfg,
+      log,
+    });
+    registerApprovalHandler(account.accountId, handler);
+    await handler.start();
+    log?.info(`[qqbot:${account.accountId}] Approval handler registered`);
+  } catch (e) {
+    log?.debug?.(`[qqbot:${account.accountId}] Approval handler not available: ${e}`);
   }
 }
 
@@ -163,13 +164,13 @@ export async function stopAccountGracefully(params: {
     }
   }
 
-  // 2. 注销处理器
   unregisterGateway(accountId);
   try {
-    unregisterApprovalHandler(accountId);
+    const h = getApprovalHandler(accountId);
+    if (h) await h.stop();
   } catch {
-    // ignore — handler 可能没注册过
   }
+  unregisterApprovalHandler(accountId);
 }
 
 /**
@@ -181,6 +182,12 @@ export async function logoutAndClearCredentials(params: {
 }): Promise<{ ok: boolean; cleared: boolean; envToken: boolean; loggedOut: boolean }> {
   const { accountId, cfg } = params;
   unregisterGateway(accountId);
+  try {
+    const h = getApprovalHandler(accountId);
+    if (h) await h.stop();
+  } catch {
+  }
+  unregisterApprovalHandler(accountId);
 
   const nextCfg = { ...cfg } as OpenClawConfig;
   const nextQQBot = cfg.channels?.qqbot ? { ...cfg.channels.qqbot } : undefined;

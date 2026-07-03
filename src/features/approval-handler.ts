@@ -10,73 +10,11 @@
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
-import { createRequire } from "node:module";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { getBotForAccount } from "../bot-instance.js";
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import type { InlineKeyboard, KeyboardButton } from "../types.js";
 
-// ─── 动态加载 gateway-runtime（兼容不同安装环境） ────────
-
-function loadGatewayRuntime(): { createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<GatewayClient> } {
-  // tsup CJS bundle 中 __filename 由构建工具注入
-  const currentFile = __filename;
-  const req = createRequire(currentFile);
-  const pluginRoot = path.resolve(path.dirname(currentFile), "..", "..");
-  const fs = req("node:fs") as typeof import("node:fs");
-
-  // 尝试从找到的 openclaw 根目录加载 gateway-runtime.js
-  const tryLoadFromRoot = (root: string) => {
-    for (const rel of ["dist/plugin-sdk/gateway-runtime.js", "plugin-sdk/gateway-runtime.js"]) {
-      const p = path.join(root, rel);
-      try {
-        if (fs.existsSync(p)) return req(p);
-      } catch { /* try next */ }
-    }
-    return null;
-  };
-
-  // 策略 1: link-sdk-core.cjs findOpenclawRoot
-  try {
-    const { findOpenclawRoot } = req(path.join(pluginRoot, "scripts", "link-sdk-core.cjs")) as {
-      findOpenclawRoot: (root: string) => string | null;
-    };
-    const root = findOpenclawRoot(pluginRoot);
-    if (root) {
-      const mod = tryLoadFromRoot(root);
-      if (mod) return mod;
-    }
-  } catch { /* fallback */ }
-
-  // 策略 2: process.argv[1] 反推（当前进程就是 openclaw）
-  try {
-    const entry = process.argv[1];
-    if (entry) {
-      const realEntry = fs.realpathSync(entry);
-      let dir = path.dirname(realEntry);
-      for (let i = 0; i < 6; i++) {
-        const mod = tryLoadFromRoot(dir);
-        if (mod) return mod;
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-      }
-    }
-  } catch { /* fallback */ }
-
-  throw new Error("Cannot find openclaw/plugin-sdk/gateway-runtime (all strategies failed)");
-}
-
-// ─── 动态加载的模块类型（兼容旧版框架） ───────────────────────
-
-/** gateway-runtime 模块的接口（动态 import） */
-type GatewayClient = {
-  start: () => void | Promise<void>;
-  stop: () => void | Promise<void>;
-  request: (method: string, params: unknown) => Promise<unknown>;
-};
-
+import { loadApprovalGatewayRuntime, type ApprovalGatewayClient } from '../runtime-adapter/gateway-runtime.js';
 type EventFrame = {
   event: string;
   payload: unknown;
@@ -249,7 +187,7 @@ function resolveTarget(
 // ─── Handler 类 ──────────────────────────────────────────────
 
 export class QQBotApprovalHandler {
-  private gatewayClient: GatewayClient | null = null;
+  private gatewayClient: ApprovalGatewayClient | null = null;
   private pending = new Map<string, PendingEntry>();
   private requestCache = new Map<string, CachedApprovalRequest>();
   private opts: QQBotApprovalHandlerOpts;
@@ -267,11 +205,9 @@ export class QQBotApprovalHandler {
     log?.info(`[qqbot:${this.opts.accountId}] approval-handler: starting`);
 
     // 动态加载 gateway-runtime（兼容旧版框架 / pnpm 环境）
-    let gatewayRuntime: { createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<GatewayClient> };
-    try {
-      gatewayRuntime = loadGatewayRuntime();
-    } catch (err) {
-      log?.error(`[qqbot:${this.opts.accountId}] approval-handler: gateway-runtime module not available, approval feature disabled. Error: ${err}`);
+    const gatewayRuntime = loadApprovalGatewayRuntime();
+    if (!gatewayRuntime) {
+      log?.debug?.(`[qqbot:${this.opts.accountId}] approval-handler: gateway-runtime not available, approval disabled`);
       this.started = false;
       return;
     }
@@ -306,7 +242,7 @@ export class QQBotApprovalHandler {
     for (const entry of this.pending.values()) clearTimeout(entry.timeoutId);
     this.pending.clear();
     this.requestCache.clear();
-    this.gatewayClient?.stop();
+    await this.gatewayClient?.stop();
     this.gatewayClient = null;
     this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: stopped`);
   }

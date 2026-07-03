@@ -108,8 +108,9 @@ export function resolveGroupAllowFrom(cfg: OpenClawConfig, accountId?: string): 
 
 /** 检查指定群是否被允许（使用标准策略引擎） */
 export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
-  const policy = resolveGroupPolicy(cfg, accountId);
-  const allowList = resolveGroupAllowFrom(cfg, accountId);
+  const account = resolveQQBotAccount(cfg, accountId);
+  const policy = account.config?.groupPolicy ?? DEFAULT_GROUP_POLICY;
+  const allowList = (account.config?.groupAllowFrom ?? []).map((id) => String(id).trim().toUpperCase());
   const allowlistConfigured = allowList.length > 0;
   const allowlistMatched = allowList.some((id) => id === "*" || id === groupOpenid.toUpperCase());
 
@@ -120,13 +121,10 @@ export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, account
   }).allowed;
 }
 
-type ResolvedGroupConfig = Omit<Required<GroupConfig>, "prompt"> & Pick<GroupConfig, "prompt">;
+export type ResolvedGroupConfig = Required<GroupConfig>;
 
-/** 解析指定群配置（具体 groupOpenid > 通配符 "*" > 账户级默认值 > 默认值） */
-export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ResolvedGroupConfig {
-  const account = resolveQQBotAccount(cfg, accountId);
+export function resolveGroupConfigFromAccount(account: ResolvedQQBotAccount, groupOpenid: string): ResolvedGroupConfig {
   const groups = account.config?.groups ?? {};
-
   const wildcardCfg = groups["*"] ?? {};
   const specificCfg = groups[groupOpenid] ?? {};
   const accountDefaultRequireMention = account.config?.defaultRequireMention ?? DEFAULT_GROUP_CONFIG.requireMention;
@@ -136,9 +134,13 @@ export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, acc
     ignoreOtherMentions: specificCfg.ignoreOtherMentions ?? wildcardCfg.ignoreOtherMentions ?? DEFAULT_GROUP_CONFIG.ignoreOtherMentions,
     toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
     name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
-    prompt: specificCfg.prompt ?? wildcardCfg.prompt,
+    prompt: specificCfg.prompt ?? wildcardCfg.prompt ?? DEFAULT_GROUP_PROMPT,
     historyLimit: specificCfg.historyLimit ?? wildcardCfg.historyLimit ?? DEFAULT_GROUP_CONFIG.historyLimit,
   };
+}
+
+export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ResolvedGroupConfig {
+  return resolveGroupConfigFromAccount(resolveQQBotAccount(cfg, accountId), groupOpenid);
 }
 
 /** 解析群历史消息缓存条数 */
@@ -148,10 +150,7 @@ export function resolveHistoryLimit(cfg: OpenClawConfig, groupOpenid: string, ac
 
 /** 解析群行为 PE（具体群 > "*" > 默认值） */
 export function resolveGroupPrompt(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): string {
-  const account = resolveQQBotAccount(cfg, accountId);
-  const groups = account.config?.groups ?? {};
-
-  return groups[groupOpenid]?.prompt ?? groups["*"]?.prompt ?? DEFAULT_GROUP_PROMPT;
+  return resolveGroupConfig(cfg, groupOpenid, accountId).prompt;
 }
 
 /** 解析群是否需要 @机器人才响应 */
