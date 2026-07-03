@@ -68,10 +68,13 @@ export class QQBotGateway {
   }
 
   async start(callbacks?: GatewayCallbacks, signal?: AbortSignal): Promise<void> {
-    this.bot.on('ready', () => {
-      this.log.info('Gateway ready');
+    const handleReady = () => {
+      this.log.info(`Gateway ready`);
       callbacks?.onReady?.();
-    });
+    };
+    this.bot.on(`ready`, handleReady);
+    this.bot.on(`resumed`, handleReady);
+
 
     this.bot.on('error', (err: Error) => {
       this.log.error(`Gateway error: ${err.message}`);

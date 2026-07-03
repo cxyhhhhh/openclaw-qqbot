@@ -19,7 +19,7 @@ import { registerGateway, unregisterGateway, getGateway } from '../outbound/outb
 import { saveCredentialBackup, loadCredentialBackup } from '../features/credential-backup.js';
 import { startImageServer, isImageServerRunning } from '../features/image-server.js';
 import { triggerUpdateCheck } from '../features/update-checker.js';
-import { QQBotApprovalHandler, registerApprovalHandler, unregisterApprovalHandler } from '../features/approval-handler.js';
+import { QQBotApprovalHandler, registerApprovalHandler, unregisterApprovalHandler, getApprovalHandler } from '../features/approval-handler.js';
 
 export interface StartAccountContext {
   account: ResolvedQQBotAccount;
@@ -113,23 +113,25 @@ function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: PluginLogger
   // 2. 版本更新检测（后台预热，fire-and-forget）
   triggerUpdateCheck(log);
 
-  // 3. 审批处理器（监听框架审批事件 → 发送 Inline Keyboard）
-  try {
-    const handler = new QQBotApprovalHandler({
-      accountId: account.accountId,
-      appId: account.appId,
-      clientSecret: account.clientSecret,
-      cfg,
-      log,
-    });
-    registerApprovalHandler(account.accountId, handler);
-    handler.start().catch((e) => {
-      log?.error(`[qqbot:${account.accountId}] Approval handler start failed: ${e}`);
-    });
-    log?.info(`[qqbot:${account.accountId}] Approval handler registered`);
-  } catch (e) {
-    // 旧版框架无 gateway-runtime 时会抛出，降级为不可用
-    log?.debug?.(`[qqbot:${account.accountId}] Approval handler not available: ${e}`);
+  // 3. 审批处理器（仅在未注册时创建，resumed 不重复初始化）
+  if (!getApprovalHandler(account.accountId)) {
+    try {
+      const handler = new QQBotApprovalHandler({
+        accountId: account.accountId,
+        appId: account.appId,
+        clientSecret: account.clientSecret,
+        cfg,
+        log,
+      });
+      registerApprovalHandler(account.accountId, handler);
+      handler.start().catch((e) => {
+        log?.error(`[qqbot:${account.accountId}] Approval handler start failed: ${e}`);
+      });
+      log?.info(`[qqbot:${account.accountId}] Approval handler registered`);
+    } catch (e) {
+      // 旧版框架无 gateway-runtime 时会抛出，降级为不可用
+      log?.debug?.(`[qqbot:${account.accountId}] Approval handler not available: ${e}`);
+    }
   }
 }
 

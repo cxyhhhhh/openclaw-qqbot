@@ -75,20 +75,32 @@ export async function handleInteraction(
   }
 
   const buttonData = event.data?.resolved?.button_data;
-  if (!buttonData || !buttonData.startsWith('approve:')) return;
-
-  const handler = getApprovalHandler(account.accountId);
-  if (!handler) return;
+  if (!buttonData || !buttonData.startsWith('approve:')) {
+    if (buttonData) log.debug(`handleInteraction: non-approve button data=${buttonData}`);
+    return;
+  }
 
   const parts = buttonData.split(':');
-  if (parts.length < 3) return;
+  if (parts.length < 3) {
+    log.warn(`handleInteraction: malformed button data=${buttonData}`);
+    return;
+  }
+
+  const handler = getApprovalHandler(account.accountId);
+  if (!handler) {
+    log.warn(`handleInteraction: no approval handler for account=${account.accountId}`);
+    return;
+  }
 
   const approvalId = parts[1];
   const decision = parts[2] as 'allow-once' | 'allow-always' | 'deny';
 
+  log.debug(`handleInteraction: resolving approval id=${approvalId} decision=${decision}`);
+
   try {
-    await handler.resolveApproval(approvalId, decision);
+    const ok = await handler.resolveApproval(approvalId, decision);
+    log.debug(`handleInteraction: resolve result=${ok} id=${approvalId}`);
   } catch (err) {
-    log.error(`Approval resolve error: ${err}`);
+    log.error(`handleInteraction: resolve error id=${approvalId}: ${err}`);
   }
 }

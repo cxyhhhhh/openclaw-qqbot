@@ -254,6 +254,7 @@ export class QQBotApprovalHandler {
   private requestCache = new Map<string, CachedApprovalRequest>();
   private opts: QQBotApprovalHandlerOpts;
   private started = false;
+  private connected = false;
 
   constructor(opts: QQBotApprovalHandlerOpts) {
     this.opts = opts;
@@ -281,9 +282,15 @@ export class QQBotApprovalHandler {
         gatewayUrl: this.opts.gatewayUrl,
         clientDisplayName: "QQBot Approval Handler",
         onEvent: (evt: EventFrame) => this.handleGatewayEvent(evt),
-        onHelloOk: () => log?.info(`[qqbot:${this.opts.accountId}] approval-handler: connected to gateway`),
+        onHelloOk: () => {
+          this.connected = true;
+          log?.info(`[qqbot:${this.opts.accountId}] approval-handler: connected to gateway`);
+        },
         onConnectError: (err: { message: string }) => log?.error(`[qqbot:${this.opts.accountId}] approval-handler: connect error: ${err.message}`),
-        onClose: (code: number, reason: string) => log?.debug?.(`[qqbot:${this.opts.accountId}] approval-handler: gateway closed: ${code} ${reason}`),
+        onClose: (code: number, reason: string) => {
+          this.connected = false;
+          log?.debug?.(`[qqbot:${this.opts.accountId}] approval-handler: gateway closed: ${code} ${reason}`);
+        },
       });
       this.gatewayClient.start();
       setApprovalFeatureAvailable(true);
@@ -304,6 +311,9 @@ export class QQBotApprovalHandler {
     this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: stopped`);
   }
 
+  /** gateway 是否已建立连接 */
+  get isConnected(): boolean { return this.connected; }
+
   /** 检查是否有指定 shortId 对应的 pending 审批 */
   hasShortId(shortId: string): boolean {
     for (const id of this.pending.keys()) {
@@ -317,7 +327,10 @@ export class QQBotApprovalHandler {
     approvalId: string,
     decision: "allow-once" | "allow-always" | "deny"
   ): Promise<boolean> {
-    if (!this.gatewayClient) return false;
+    if (!this.gatewayClient) {
+      this.opts.log?.warn(`[qqbot:${this.opts.accountId}] approval-handler: resolve ignored ${approvalId} → gatewayClient not ready`);
+      return false;
+    }
 
     // 查找完整 ID：支持完整 ID（exec:uuid / plugin:uuid）、纯 UUID、或 shortId（8位）
     let fullId = approvalId;
@@ -345,11 +358,11 @@ export class QQBotApprovalHandler {
     const isPending = this.pending.has(fullId);
     const isCached = this.requestCache.has(fullId);
 
-    this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: resolving ${fullId} (input=${approvalId}) kind=${kind} → ${decision}, pending=${isPending}, cached=${isCached}`);
+    this.opts.log?.debug?.(`[qqbot:${this.opts.accountId}] approval-handler: resolving ${fullId} (input=${approvalId}) kind=${kind} → ${decision}, pending=${isPending}, cached=${isCached}`);
 
     try {
       await this.gatewayClient.request(method, { id: fullId, decision });
-      this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: RPC success ${toShortId(fullId)} → ${decision} (method=${method})`);
+      this.opts.log?.debug(`[qqbot:${this.opts.accountId}] approval-handler: RPC success ${toShortId(fullId)} → ${decision} (method=${method})`);
       return true;
     } catch (err) {
       this.opts.log?.error(`[qqbot:${this.opts.accountId}] approval-handler: resolve failed: ${err}`);
@@ -378,7 +391,10 @@ export class QQBotApprovalHandler {
 
     // 只处理本账号的请求
     const reqAccountId = (request.request as any).turnSourceAccountId?.trim();
-    if (reqAccountId && reqAccountId !== accountId) return;
+    if (reqAccountId && reqAccountId !== accountId) {
+      log?.debug?.(`[qqbot:${accountId}] approval-handler: ${kind} ${shortId} ignored → account mismatch (req=${reqAccountId})`);
+      return;
+    }
 
     // 解析投递目标
     const sessionKey = (request.request as any).sessionKey;
