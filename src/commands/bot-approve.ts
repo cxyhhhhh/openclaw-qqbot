@@ -1,5 +1,6 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import { getAdapters } from '../runtime-adapter/resolve.js';
+import { updateGlobalConfig } from './config-util.js';
 
 /** 审批预设配置 */
 const PRESETS: Record<string, { security: string; ask: string; desc: string }> = {
@@ -65,13 +66,9 @@ export function botApprove(getRuntime: () => any): SlashCommand {
       }
 
       const adapters = getAdapters(runtime);
-      if (!adapters.persistConfig) {
-        return '⚠️ 当前框架版本不支持在线修改配置，请手动编辑 openclaw.json。';
-      }
 
-      const getConfig = adapters.getConfig;
       const loadExecConfig = () => {
-        const cfg = getConfig?.() ?? {};
+        const cfg = adapters.getConfig?.() ?? {};
         const tools = (cfg as any).tools ?? {};
         const exec = tools.exec ?? {};
         return {
@@ -101,69 +98,37 @@ export function botApprove(getRuntime: () => any): SlashCommand {
       // on / off / always → 写入预设
       const preset = PRESETS[arg];
       if (preset) {
-        try {
-          await adapters.persistConfig((cfg: any) => {
-            if (!cfg.tools) cfg.tools = {};
-            if (!cfg.tools.exec) cfg.tools.exec = {};
-            cfg.tools.exec.security = preset.security;
-            cfg.tools.exec.ask = preset.ask;
-          });
-          if (arg === 'on') {
-            return [
-              '✅ 审批已开启',
-              '',
-              '• security = allowlist（白名单模式）',
-              '• ask = on-miss（未命中白名单时需审批）',
-              '',
-              '已批准的命令自动加入白名单，下次直接执行。',
-            ].join('\n');
-          }
-          if (arg === 'off') {
-            return [
-              '✅ 审批已关闭',
-              '',
-              '• security = full（允许所有命令）',
-              '• ask = off（不需要审批）',
-              '',
-              '⚠️ 所有命令将直接执行，不会弹出审批确认。',
-            ].join('\n');
-          }
-          return [
-            '✅ 已切换为严格审批模式',
-            '',
-            '• security = allowlist',
-            '• ask = always（每次执行都需审批）',
-            '',
-            '每个命令都会弹出审批按钮，需手动确认。',
-          ].join('\n');
-        } catch (err) {
-          return `❌ 配置更新失败: ${err instanceof Error ? err.message : String(err)}`;
+        const error = await updateGlobalConfig(getRuntime, (cfg: any) => {
+          cfg.tools ??= {};
+          cfg.tools.exec ??= {};
+          cfg.tools.exec.security = preset.security;
+          cfg.tools.exec.ask = preset.ask;
+        });
+        if (error) return error;
+
+        if (arg === 'on') {
+          return ['✅ 审批已开启', '', '• security = allowlist', '• ask = on-miss', '', '已批准的命令自动加入白名单，下次直接执行。'].join('\n');
         }
+        if (arg === 'off') {
+          return ['✅ 审批已关闭', '', '• security = full', '• ask = off', '', '⚠️ 所有命令将直接执行，不会弹出审批确认。'].join('\n');
+        }
+        return ['✅ 已切换为严格审批模式', '', '• security = allowlist', '• ask = always', '', '每个命令都会弹出审批按钮，需手动确认。'].join('\n');
       }
 
       // reset → 删除 tools.exec.security 和 tools.exec.ask
       if (arg === 'reset') {
-        try {
-          await adapters.persistConfig((cfg: any) => {
-            const exec = cfg.tools?.exec;
-            if (exec) {
-              delete exec.security;
-              delete exec.ask;
-              if (Object.keys(exec).length === 0) delete cfg.tools.exec;
-              if (cfg.tools && Object.keys(cfg.tools).length === 0) delete cfg.tools;
-            }
-          });
-          return [
-            '✅ 审批配置已重置',
-            '',
-            '已移除 tools.exec.security 和 tools.exec.ask',
-            '框架将使用默认值（security=deny, ask=on-miss）',
-            '',
-            '如需开启命令执行，请使用 /bot-approve on',
-          ].join('\n');
-        } catch (err) {
-          return `❌ 配置更新失败: ${err instanceof Error ? err.message : String(err)}`;
-        }
+        const error = await updateGlobalConfig(getRuntime, (cfg: any) => {
+          const exec = cfg.tools?.exec;
+          if (exec) {
+            delete exec.security;
+            delete exec.ask;
+            if (Object.keys(exec).length === 0) delete cfg.tools.exec;
+            if (cfg.tools && Object.keys(cfg.tools).length === 0) delete cfg.tools;
+          }
+        });
+        if (error) return error;
+
+        return ['✅ 审批配置已重置', '', '已移除 tools.exec.security 和 tools.exec.ask', '框架将使用默认值（security=deny, ask=on-miss）', '', '如需开启命令执行，请使用 /bot-approve on'].join('\n');
       }
 
       return [

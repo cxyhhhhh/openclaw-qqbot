@@ -1,6 +1,6 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { updateAccountConfig } from './config-util.js';
 
 /** /bot-streaming — 一键开关流式消息 */
 export function botStreaming(account: ResolvedQQBotAccount, getRuntime: () => any): SlashCommand {
@@ -36,31 +36,15 @@ export function botStreaming(account: ResolvedQQBotAccount, getRuntime: () => an
         return `ℹ️ 流式消息已经是${currentEnabled ? '开启' : '关闭'}状态，无需切换。`;
       }
 
-      // 通过 runtime adapter 持久化配置
-      const runtime = getRuntime();
-      if (!runtime) {
-        return '⚠️ runtime 不可用，无法修改配置。';
-      }
+      const error = await updateAccountConfig(account, getRuntime, (acfg) => {
+        (acfg as any).streaming = targetEnabled;
+      });
+      if (error) return error;
 
-      const adapters = getAdapters(runtime);
-      if (!adapters.persistConfig) {
-        return '⚠️ 当前框架版本不支持在线修改配置，请手动编辑配置文件。';
-      }
-
-      try {
-        await adapters.persistConfig((cfg: any) => {
-          const qqbot = cfg.channels?.qqbot ?? {};
-          qqbot.streaming = targetEnabled;
-          if (!cfg.channels) cfg.channels = {};
-          cfg.channels.qqbot = qqbot;
-        });
-        account.config.streaming = targetEnabled;
-        return targetEnabled
-          ? '✅ 流式消息已开启，私聊消息将以流式方式发送。'
-          : '✅ 流式消息已关闭，私聊消息将以静态方式发送。';
-      } catch (err) {
-        return `⚠️ 配置修改失败：${err instanceof Error ? err.message : String(err)}`;
-      }
+      account.config.streaming = targetEnabled;
+      return targetEnabled
+        ? '✅ 流式消息已开启，私聊消息将以流式方式发送。'
+        : '✅ 流式消息已关闭，私聊消息将以静态方式发送。';
     },
   };
 }

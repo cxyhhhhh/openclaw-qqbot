@@ -1,6 +1,6 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { updateAccountConfig } from './config-util.js';
 
 /** /bot-group-always — 修改群消息默认响应模式 */
 export function botGroupAlways(account: ResolvedQQBotAccount, getRuntime: () => any): SlashCommand {
@@ -40,54 +40,21 @@ export function botGroupAlways(account: ResolvedQQBotAccount, getRuntime: () => 
         return `🤖 群自主发言已经是"${arg}"状态，无需操作`;
       }
 
-      const runtime = getRuntime();
-      if (!runtime) {
-        return '⚠️ runtime 不可用，无法修改配置。';
-      }
+      const error = await updateAccountConfig(account, getRuntime, (acfg) => {
+        (acfg as any).defaultRequireMention = newRequireMention;
+      });
+      if (error) return error;
 
-      const adapters = getAdapters(runtime);
-      if (!adapters.persistConfig) {
-        return [
-          '⚠️ 当前版本不支持在线修改配置',
-          '',
-          '可通过以下命令手动设置：',
-          '',
-          '```shell',
-          `openclaw config set channels.qqbot.defaultRequireMention ${newRequireMention}`,
-          '```',
-        ].join('\n');
-      }
+      // 更新内存中的配置
+      account.config.defaultRequireMention = newRequireMention;
 
-      try {
-        await adapters.persistConfig((cfg: any) => {
-          if (!cfg.channels) cfg.channels = {};
-          if (!cfg.channels.qqbot) cfg.channels.qqbot = {};
-
-          const qqbot = cfg.channels.qqbot;
-          const accountId = account.accountId;
-          const isNamedAccount = accountId !== 'default' && qqbot.accounts?.[accountId];
-
-          if (isNamedAccount) {
-            if (!qqbot.accounts[accountId]) qqbot.accounts[accountId] = {};
-            qqbot.accounts[accountId].defaultRequireMention = newRequireMention;
-          } else {
-            qqbot.defaultRequireMention = newRequireMention;
-          }
-        });
-
-        // 更新内存中的配置
-        account.config.defaultRequireMention = newRequireMention;
-
-        return [
-          `✅ 群自主发言已设置为 ${newRequireMention ? '**off**（仅被 @ 时回复）' : '**on**（AI 自主判断何时发言）'}`,
-          '',
-          newRequireMention
-            ? '仅在被 @ 机器人才会回复。'
-            : 'AI 将自主判断群消息是否需要回复，无需被 @ 即可发言。',
-        ].join('\n');
-      } catch (err) {
-        return `❌ 配置修改失败：${err instanceof Error ? err.message : String(err)}`;
-      }
+      return [
+        `✅ 群自主发言已设置为 ${newRequireMention ? '**off**（仅被 @ 时回复）' : '**on**（AI 自主判断何时发言）'}`,
+        '',
+        newRequireMention
+          ? '仅在被 @ 机器人才会回复。'
+          : 'AI 将自主判断群消息是否需要回复，无需被 @ 即可发言。',
+      ].join('\n');
     },
   };
 }
