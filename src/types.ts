@@ -29,6 +29,8 @@ export interface ResolvedQQBotAccount {
   imageServerBaseUrl?: string;
   /** 是否支持 markdown 消息（默认 true） */
   markdownSupport: boolean;
+  /** User-Agent 尾部追加内容 */
+  userAgentSuffix: string;
   config: QQBotAccountConfig;
 }
 
@@ -139,6 +141,11 @@ export interface QQBotAccountConfig {
    * 配置后，收到语音消息时会自动调用 STT 服务转录为文字
    */
   stt?: STTChannelConfig;
+  /**
+   * User-Agent 尾部追加内容（用于私有化部署标识等场景）
+   * 追加在 `QQBotPlugin/{version} (Node/{nodeVersion}; {os}; OpenClaw/{version})` 之后
+   */
+  userAgentSuffix?: string;
 }
 
 /**

@@ -5,11 +5,11 @@
  * 替代原 api.ts 的所有功能 — 消费者通过 getBotForAccount() 获取 bot，
  * 然后使用 bot.api / bot.send() 等 SDK 原生能力。
  */
+import os from 'node:os';
 import type { QQBot } from '@tencent-connect/qqbot-nodejs';
 import { getGateway } from './outbound/outbound-service.js';
 import { getPackageVersion } from './utils/pkg-version.js';
 
-// ── User-Agent 构建（替代原 api.ts 的 buildUserAgent / setOpenClawVersion）──
 
 const PLUGIN_VERSION = getPackageVersion();
 let _openclawVersion = 'unknown';
@@ -22,8 +22,9 @@ export function getOpenClawVersion(): string {
   return _openclawVersion;
 }
 
-export function buildUserAgent(): string {
-  return `openclaw-qqbot/${PLUGIN_VERSION} openclaw/${_openclawVersion}`;
+export function buildUserAgent(suffix?: string): string {
+  const base = `QQBotPlugin/${PLUGIN_VERSION} (Node/${process.versions.node}; ${os.platform()}; OpenClaw/${_openclawVersion})`;
+  return suffix ? `${base} ${suffix}` : base;
 }
 
 // ── Bot 实例获取 ──

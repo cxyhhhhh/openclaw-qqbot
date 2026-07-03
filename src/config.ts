@@ -122,16 +122,17 @@ export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, account
 
 type ResolvedGroupConfig = Omit<Required<GroupConfig>, "prompt"> & Pick<GroupConfig, "prompt">;
 
-/** 解析指定群配置（具体 groupOpenid > 通配符 "*" > 默认值） */
+/** 解析指定群配置（具体 groupOpenid > 通配符 "*" > 账户级默认值 > 默认值） */
 export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ResolvedGroupConfig {
   const account = resolveQQBotAccount(cfg, accountId);
   const groups = account.config?.groups ?? {};
 
   const wildcardCfg = groups["*"] ?? {};
   const specificCfg = groups[groupOpenid] ?? {};
+  const accountDefaultRequireMention = account.config?.defaultRequireMention ?? DEFAULT_GROUP_CONFIG.requireMention;
 
   return {
-    requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? DEFAULT_GROUP_CONFIG.requireMention,
+    requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? accountDefaultRequireMention,
     ignoreOtherMentions: specificCfg.ignoreOtherMentions ?? wildcardCfg.ignoreOtherMentions ?? DEFAULT_GROUP_CONFIG.ignoreOtherMentions,
     toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
     name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
@@ -221,6 +222,15 @@ export function resolveDefaultQQBotAccountId(cfg: OpenClawConfig): string {
 }
 
 /**
+ * 解析 User-Agent 追加后缀（通道级：channels.qqbot.userAgentSuffix）
+ * 用于私有化部署标识等场景，追加在 UA 末尾
+ */
+export function resolveUserAgentSuffix(cfg: OpenClawConfig): string {
+  const qqbot = cfg.channels?.qqbot as QQBotChannelConfig | undefined;
+  return qqbot?.userAgentSuffix ? String(qqbot.userAgentSuffix).trim() : '';
+}
+
+/**
  * 解析 QQBot 账户配置
  */
 export function resolveQQBotAccount(
@@ -278,6 +288,7 @@ export function resolveQQBotAccount(
     systemPrompt: accountConfig.systemPrompt,
     imageServerBaseUrl: accountConfig.imageServerBaseUrl || process.env.QQBOT_IMAGE_SERVER_BASE_URL,
     markdownSupport: accountConfig.markdownSupport !== false,
+    userAgentSuffix: resolveUserAgentSuffix(cfg),
     config: accountConfig,
   };
 }

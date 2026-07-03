@@ -50,7 +50,9 @@ export class QQBotGateway {
       appSecret: account.clientSecret,
       accountId: account.accountId,
       markdownSupport: account.markdownSupport,
-      userAgent: buildUserAgent(),
+      userAgent: buildUserAgent(account.userAgentSuffix),
+      baseUrl: process.env.QQBOT_BASE_URL?.replace(/\/+$/, '') || 'https://api.sgroup.qq.com',
+      tokenBaseUrl: process.env.QQBOT_TOKEN_BASE_URL?.replace(/\/+$/, '') || 'https://bots.qq.com',
       sessionPersistence: kvSessionPersistence({
         store: new FileKVStore({ dir: dataDir, fileName: 'session.json' }),
         accountId: account.accountId,
