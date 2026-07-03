@@ -2,7 +2,8 @@
  * SDK 中间件编排
  *
  * 根据账户配置组装 SDK 内置中间件链。
- * 中间件仅负责过滤和上下文富化，业务转发在 bot.on("message") 事件中处理。
+ * 中间件负责过滤和上下文富化；concurrencyGuard 负责串行+合并，
+ * 合并后的消息继续走完剩余中间件链，最终统一由 bot.on("message") 处理转发。
  */
 import type { QQBot } from '@tencent-connect/qqbot-nodejs';
 import {
@@ -64,8 +65,33 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   // 7. 三层限流（sender / group / global）
   bot.use(rateLimiter());
 
-  // 8. 并发串行控制（同用户/群顺序处理）
-  bot.use(concurrencyGuard());
+  // 8. 并发串行+合并（在副作用中间件之前）
+  //     - 同 peer 串行处理，避免平台 session conflict
+  //     - 处理中消息暂存 buffer；完成后合并为一条，继续走完剩余中间件链
+  //       （typingIndicator/quoteRef/historyBuffer/... 直到 bot.on("message")）
+  //     - 合并时清除 assembledBody 让 dispatch.ts 用合并后 content 重建
+  bot.use(concurrencyGuard({
+    strategy: 'merge',
+    maxQueue: 50,
+    onMerge: (buffered) => {
+      const last = buffered[buffered.length - 1];
+      if (buffered.length === 1) return last;
+
+      // 透传原始消息列表，格式拼接下沉给下游 envelopeFormatter / assembleBody
+      (last.state as Record<string, unknown>).mergedMessages = buffered;
+
+      // 合并附件（所有 buffer 中的附件汇总到 survivor）
+      const attachments = buffered.flatMap((c) => c.message.attachments ?? []);
+      if (attachments.length > 0) {
+        last.message.attachments = attachments;
+      }
+
+      // 清除 assembledBody，让 dispatch.ts 用合并后的 ctx 重新构建
+      delete (last.state as Record<string, unknown>).assembledBody;
+
+      return last;
+    },
+  }));
 
   // 9. C2C 输入状态指示器
   bot.use(typingIndicator());

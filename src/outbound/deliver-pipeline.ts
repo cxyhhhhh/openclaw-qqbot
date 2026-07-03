@@ -82,6 +82,8 @@ export async function deliverReply(
   const mediaUrls = resolveMediaUrls(payload);
   const hasMedia = mediaUrls.length > 0;
 
+  ctx.log?.debug(`[text] textLen=${text.length} mediaCount=${mediaUrls.length}`);
+
   // ── Layer 1: 语音意图 ──
   if (payload.audioAsVoice) {
     if (ctx.textToSpeech && text) {
@@ -104,7 +106,7 @@ export async function deliverReply(
     if (text) {
       const result = await ctx.sendText(ctx.qualifiedTarget, text);
       if (result.error) {
-        ctx.log?.error(`[deliver:media] sendText failed: ${result.error}`);
+        ctx.log?.error(`[media] sendText failed: ${result.error}`);
       }
     }
     return;
@@ -118,7 +120,7 @@ export async function deliverReply(
   } else {
     const result = await ctx.sendText(ctx.qualifiedTarget, text);
     if (result.error) {
-      ctx.log?.error(`[deliver:plain] sendText failed: ${result.error}`);
+      ctx.log?.error(`[text] sendText failed: ${result.error}`);
     }
   }
 }
@@ -135,7 +137,7 @@ async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void>
       log: ctx.log,
     });
     if (result.error) {
-      ctx.log?.error(`[deliver:media] ${result.error}`);
+      ctx.log?.error(`[media] ${result.error}`);
     }
   }
 }
@@ -159,7 +161,7 @@ async function handleVoiceIntent(text: string, ctx: DeliverContext): Promise<boo
     });
 
     if (!ttsResult.audioPath) {
-      ctx.log?.error(`[deliver:tts] TTS failed: ${ttsResult.error ?? 'no audio path returned'}`);
+      ctx.log?.error(`[tts] TTS failed: ${ttsResult.error ?? 'no audio path returned'}`);
       return false;
     }
 
@@ -168,21 +170,21 @@ async function handleVoiceIntent(text: string, ctx: DeliverContext): Promise<boo
       const silkBase64 = await ctx.audioFileToSilkBase64(ttsResult.audioPath);
       if (silkBase64) {
         const result = await ctx.sendMedia(ctx.qualifiedTarget, silkBase64, { mediaKind: 'voice' });
-        if (result.error) ctx.log?.error(`[deliver:tts] sendVoice(base64) failed: ${result.error}`);
+        if (result.error) ctx.log?.error(`[tts] sendVoice(base64) failed: ${result.error}`);
         return !result.error;
       }
-      ctx.log?.error(`[deliver:tts] SILK conversion failed, trying localPath fallback`);
+      ctx.log?.error(`[tts] SILK conversion failed, trying localPath fallback`);
     }
 
     // Fallback: 直接发本地路径（SDK 内部处理格式转换）
     const result = await ctx.sendMedia(ctx.qualifiedTarget, ttsResult.audioPath, { mediaKind: 'voice' });
     if (result.error) {
-      ctx.log?.error(`[deliver:tts] sendVoice(localPath) failed: ${result.error}`);
+      ctx.log?.error(`[tts] sendVoice(localPath) failed: ${result.error}`);
       return false;
     }
     return true;
   } catch (err) {
-    ctx.log?.error(`[deliver:tts] TTS/voice send failed: ${err instanceof Error ? err.message : String(err)}`);
+    ctx.log?.error(`[tts] TTS/voice send failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }

@@ -4,6 +4,9 @@
  * 处理 SDK 的 message / interaction 事件：
  * - message: 中间件处理完毕后，将消息转发到 OpenClaw AI
  * - interaction: 路由到审批处理器
+ *
+ * 注意：并发控制（串行+合并）由 concurrencyGuard 中间件处理，
+ * 此处只负责单条消息的 dispatch。
  */
 import type { MiddlewareContext, QQBotInboundMessage, InteractionEvent } from '@tencent-connect/qqbot-nodejs';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
@@ -21,10 +24,18 @@ export async function handleMessage(
   runtime: PluginRuntime,
   log: PluginLogger,
 ): Promise<void> {
+  const hlog = log.child('handle');
   const scope = msg.replyTarget.scope;
   const targetId = scope === 'group'
     ? `qqbot:group:${msg.replyTarget.targetId}`
     : `qqbot:c2c:${msg.replyTarget.targetId}`;
+
+  const mergedCount = (ctx.state.mergedMessages as unknown[] | undefined)?.length;
+  if (mergedCount) {
+    hlog.info(`merged batch count=${mergedCount} msgId=${msg.messageId}`);
+  } else {
+    hlog.debug(`enter msgId=${msg.messageId} scope=${scope} contentLen=${(msg.content ?? '').length}`);
+  }
 
   try {
     recordKnownUser({
@@ -47,6 +58,7 @@ export async function handleMessage(
     },
     () => dispatchToOpenClaw(ctx, msg, account, runtime, log),
   );
+  hlog.debug(`done msgId=${msg.messageId}`);
 }
 
 export async function handleInteraction(

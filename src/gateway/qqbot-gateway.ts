@@ -59,6 +59,9 @@ export class QQBotGateway {
       logger: this.log,
     });
 
+    // concurrencyGuard 的 merge 策略合并后会继续走完剩余中间件链，
+    // 最终与单条消息一样统一由下方 bot.on('message') 处理转发，
+    // 因此这里不再需要单独的 onMergeDispatch 回调。
     setupMiddlewares(this.bot, account, {
       getRuntime: () => runtime,
     });
@@ -75,10 +78,15 @@ export class QQBotGateway {
       callbacks?.onError?.(err);
     });
 
-    this.bot.on('message', (ctx: MiddlewareContext, msg: QQBotInboundMessage) => {
-      handleMessage(ctx, msg, this.account, this.runtime, this.log).catch((err) => {
-        this.log.error(`Dispatch error: ${err}`);
-      });
+    const gatewayLog = this.log.child('gateway');
+
+    this.bot.on('message', async (ctx: MiddlewareContext, msg: QQBotInboundMessage) => {
+      gatewayLog.debug(`message msgId=${msg.messageId}`);
+      try {
+        await handleMessage(ctx, msg, this.account, this.runtime, this.log);
+      } catch (err) {
+        gatewayLog.error(`Dispatch error: ${err instanceof Error ? err.message : String(err)}`);
+      }
     });
 
     this.bot.on('interaction', (_ctx, event: InteractionEvent) => {

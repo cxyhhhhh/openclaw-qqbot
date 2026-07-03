@@ -88,7 +88,7 @@ export class StreamingController {
    */
   onPartialReply(text: string): Promise<void> {
     this.chain = this.chain.then(() => this.doPartialReply(text)).catch((err) => {
-      this.logError(`onPartialReply error: ${err instanceof Error ? err.message : String(err)}`);
+      this.deps.log?.error(`onPartialReply error: ${err instanceof Error ? err.message : String(err)}`);
     });
     return this.chain as Promise<void>;
   }
@@ -98,7 +98,7 @@ export class StreamingController {
    */
   finalize(finalText?: string): Promise<void> {
     this.chain = this.chain.then(() => this.doFinalize(finalText)).catch((err) => {
-      this.logError(`finalize error: ${err instanceof Error ? err.message : String(err)}`);
+      this.deps.log?.error(`finalize error: ${err instanceof Error ? err.message : String(err)}`);
     });
     return this.chain as Promise<void>;
   }
@@ -113,7 +113,7 @@ export class StreamingController {
       try {
         await this.session.complete();
       } catch (err) {
-        this.logError(`abort complete failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.deps.log?.error(`abort complete failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       this.session = null;
     }
@@ -130,7 +130,7 @@ export class StreamingController {
 
     // 回复边界检测（用原始文本前缀匹配）
     if (this.lastRawFull && fullText.length > 0 && !fullText.startsWith(this.lastRawFull)) {
-      this.logInfo(
+      this.deps.log?.debug(
         `reply boundary detected: prev=${this.lastRawFull.length} new=${fullText.length}`,
       );
       this.boundaryPrefix = this.lastRawFull + '\n\n';
@@ -163,9 +163,10 @@ export class StreamingController {
         await this.session.complete();
         this.session = null;
         this.transitionTo('completed', 'finalize:done');
+        this.deps.log?.info(`stream done chunks=${this.sentChunkCount} chars=${this.lastRawFull.length}`);
         return;
       } catch (err) {
-        this.logError(`finalize complete failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.deps.log?.error(`finalize complete failed: ${err instanceof Error ? err.message : String(err)}`);
         this.transitionTo('aborted', 'finalize:complete_error');
         return;
       }
@@ -175,7 +176,7 @@ export class StreamingController {
     if (this.sentChunkCount > 0) {
       this.transitionTo('completed', 'finalize:no_session_but_sent');
     } else {
-      this.logInfo('no chunks sent, falling back to static');
+      this.deps.log?.info('no chunks sent, falling back to static');
       this.transitionTo('aborted', 'finalize:fallback_to_static');
     }
   }
@@ -190,12 +191,13 @@ export class StreamingController {
     if (!this.session) {
       this.session = this.deps.gateway.openStream(this.deps.target, this.deps.replyToId);
       this.transitionTo('streaming', 'first_chunk');
+      this.deps.log?.info(`first chunk len=${text.length}`);
     }
     try {
       await this.session.update(text);
       this.sentChunkCount += 1;
     } catch (err) {
-      this.logError(`stream update failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.deps.log?.error(`stream update failed: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
     }
   }
@@ -204,19 +206,11 @@ export class StreamingController {
 
   private transitionTo(next: StreamingPhase, reason: string): void {
     if (this.phase === next) return;
-    this.logInfo(`phase: ${this.phase} → ${next} (${reason})`);
+    this.deps.log?.info(`phase: ${this.phase} → ${next} (${reason})`);
     this.phase = next;
   }
 
-  // ── 日志 ──
 
-  private logInfo(msg: string): void {
-    this.deps.log?.info(`[qqbot:streaming] ${msg}`);
-  }
-
-  private logError(msg: string): void {
-    this.deps.log?.error(`[qqbot:streaming] ${msg}`);
-  }
 }
 
 // ── 路由判断 ──

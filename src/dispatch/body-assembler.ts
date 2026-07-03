@@ -30,6 +30,8 @@ const QUOTE_BEGIN = '[Quoted message begins]';
 const QUOTE_END = '[Quoted message ends]';
 const HISTORY_CTX_START = '[Chat messages since your last reply — CONTEXT ONLY]';
 const HISTORY_CTX_END = '[CURRENT MESSAGE — reply to this]';
+const MERGE_CTX_START = '[Merged messages — CONTEXT ONLY]';
+const MERGE_CTX_END = '[CURRENT MESSAGE — reply to this one]';
 
 export interface AssembledBody {
   /** Web UI 展示用 body */
@@ -58,6 +60,7 @@ export function assembleBody(
   const processed = ctx.state.processedAttachments as ProcessedAttachments | undefined;
   const quote = ctx.state.quote as ResolvedQuote | undefined;
   const history = ctx.state.history as HistoryEntry[] | undefined;
+  const mergedMessages = ctx.state.mergedMessages as MiddlewareContext[] | undefined;
 
   // ── Layer 1: userContent（清洗后的文本 + 语音转录 + 附件描述） ──
   const userContent = buildUserContent(ctx.message.content ?? '', processed);
@@ -65,14 +68,10 @@ export function assembleBody(
   // ── Layer 2: quotePart ──
   const quotePart = buildQuotePart(quote);
 
-  // ── Layer 3: userMessage（群带 [sender] 前缀 + (@you)） ──
-  const userMessage = buildUserMessage({
-    msg,
-    userContent,
-    quotePart,
-    isGroup,
-    wasMentioned,
-  });
+  // ── Layer 3: userMessage（群带 [sender] 前缀 + (@you)，合并消息特殊处理） ──
+  const userMessage = mergedMessages && mergedMessages.length > 0
+    ? buildMergedUserMessage({ messages: mergedMessages, quotePart, isGroup, wasMentioned })
+    : buildUserMessage({ msg, userContent, quotePart, isGroup, wasMentioned });
 
   // ── Layer 4: dynamicCtx（媒体元数据块） ──
   const dynamicCtx = buildDynamicCtx(processed);
@@ -131,6 +130,59 @@ function buildUserMessage(input: {
     return `[${senderLabel}] ${quotePart}${userContent}${atYouTag}`;
   }
   return `${quotePart}${userContent}`;
+}
+
+/** Layer 3（合并版）：concurrencyGuard merge 透传的多条消息 */
+function buildMergedUserMessage(input: {
+  messages: MiddlewareContext[];
+  quotePart: string;
+  isGroup: boolean;
+  wasMentioned: boolean;
+}): string {
+  const { messages, quotePart, isGroup, wasMentioned } = input;
+  if (messages.length <= 1) {
+    const single = messages[0]!;
+    return buildUserMessage({
+      msg: single.message,
+      userContent: single.message.content ?? '',
+      quotePart,
+      isGroup,
+      wasMentioned,
+    });
+  }
+
+  const preceding = messages.slice(0, -1);
+  const last = messages[messages.length - 1]!;
+
+  const formatOne = (ctx: MiddlewareContext): string => {
+    const m = ctx.message;
+    const content = (m.content ?? '').trim();
+    if (!isGroup) return content;
+    const label = formatSenderLabel(m.senderName, m.senderId);
+    return `[${label}]: ${content}`;
+  };
+
+  const precedingLines = preceding.map(formatOne).filter(Boolean);
+  const atYouTag = isGroup && wasMentioned ? ' (@you)' : '';
+  const lastLine = formatOne(last);
+
+  // 全部同一个人发的（私聊或群聊单人连续发言）→ 直接拼接
+  if (!isGroup || allSameSender(messages)) {
+    return [...precedingLines, lastLine].join('\n');
+  }
+
+  // 群聊多人 → 上下文段落包装
+  return [
+    MERGE_CTX_START,
+    ...precedingLines,
+    MERGE_CTX_END,
+    `${lastLine}${atYouTag}`,
+  ].join('\n');
+}
+
+function allSameSender(messages: MiddlewareContext[]): boolean {
+  const first = messages[0]?.message.senderId;
+  return messages.every((c) => c.message.senderId === first);
 }
 
 /** Layer 4：- Images / - Voice / - ASR 元数据块 */

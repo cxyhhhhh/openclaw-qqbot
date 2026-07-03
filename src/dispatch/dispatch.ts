@@ -31,16 +31,19 @@ export async function dispatchToOpenClaw(
   runtime: PluginRuntime,
   log?: PluginLogger,
 ): Promise<void> {
-  const adapters = getAdapters(runtime, log);
+  const dlog = log?.child('dispatch');
+  const adapters = getAdapters(runtime, dlog);
   const envelope = buildEnvelope(ctx, msg, account);
 
+  dlog?.debug(`received sender=${envelope.senderId} scope=${envelope.chatScope} msgId=${envelope.messageId}`);
+
   if (!adapters.inboundRun) {
-    log?.error(`runtime adapter inboundRun not available (openclaw=${adapters.version})`);
+    dlog?.error(`runtime adapter inboundRun not available (openclaw=${adapters.version})`);
     return;
   }
 
   if (!adapters.dispatchReply) {
-    log?.error(`runtime adapter dispatchReply not available (openclaw=${adapters.version})`);
+    dlog?.error(`runtime adapter dispatchReply not available (openclaw=${adapters.version})`);
     return;
   }
 
@@ -154,7 +157,7 @@ export async function dispatchToOpenClaw(
     : null;
 
   if (streamingController) {
-    log?.info(`streaming enabled for ${envelope.senderId}`);
+    dlog?.debug(`streaming enabled for ${envelope.senderId}`);
   }
 
   await adapters.inboundRun({
@@ -178,7 +181,7 @@ export async function dispatchToOpenClaw(
         recordInboundSession: adapters.recordInboundSession,
         record: {
           onRecordError: (err: unknown) => {
-            log?.error(`Session record error: ${err}`);
+            dlog?.error(`Session record error: ${err}`);
           },
         },
         runDispatch: () => {
@@ -188,23 +191,26 @@ export async function dispatchToOpenClaw(
             cfg,
             dispatcherOptions: {
               deliver: async (payload: DeliverPayload, info?: DeliverInfo) => {
-                if (streamingController && !streamingController.shouldFallbackToStatic) {
-                  await streamingController.finalize(payload.text);
-                  if (!streamingController.shouldFallbackToStatic) {
+                try {
+                  const kind = (info as any)?.kind as string | undefined;
+                  if (streamingController && !streamingController.shouldFallbackToStatic) {
+                    await streamingController.finalize(payload.text);
+                    if (!streamingController.shouldFallbackToStatic) {
+                      return;
+                    }
+                    dlog?.warn(`streaming fallback to static`);
+                  }
+
+                  if (kind === 'block') {
+                    blockDelivered = true;
+                  } else if (kind === 'final' && blockDelivered) {
                     return;
                   }
-                  log?.warn(`streaming fallback to static deliver`);
-                }
 
-                const kind = (info as any)?.kind as string | undefined;
-                if (kind === 'block') {
-                  blockDelivered = true;
-                } else if (kind === 'final' && blockDelivered) {
-                  log?.info(`skip final deliver (block already sent)`);
-                  return;
+                  await deliverReply(payload, info, deliverCtx);
+                } catch (err) {
+                  dlog?.error(`error: ${err instanceof Error ? err.message : String(err)}`);
                 }
-
-                await deliverReply(payload, info, deliverCtx);
               },
             },
             replyOptions: streamingController
@@ -219,6 +225,8 @@ export async function dispatchToOpenClaw(
       }),
     },
   });
+
+  dlog?.debug(`inboundRun completed sessionKey=${route.sessionKey}`);
 
   if (streamingController && !streamingController.isTerminal) {
     await streamingController.finalize();
