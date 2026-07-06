@@ -1,5 +1,23 @@
 import type { ResolvedQQBotAccount } from '../types.js';
+import type { SlashCommandHandlerContext } from '@tencent-connect/qqbot-nodejs';
 import { getAdapters } from '../runtime-adapter/resolve.js';
+
+/**
+ * 命令授权检查（用于 SlashCommand.authorized 回调）。
+ *
+ * 规则：
+ * - mode=open → 允许
+ * - allowFrom 为空或含 "*" → 允许
+ * - senderId 在 allowFrom 中 → 允许
+ * - 否则 → 返回错误消息
+ */
+export function checkCommandAuth(ctx: SlashCommandHandlerContext): boolean | string {
+  const p = (ctx.state as any).policy;
+  const mode = p?.c2cMode ?? 'allowlist';
+  const allowFrom: string[] = p?.allowFrom ?? [];
+  if (mode === 'open' || !allowFrom.length || allowFrom.includes('*')) return true;
+  return allowFrom.includes(ctx.message.senderId) || '⚠️ 无权限执行此命令';
+}
 
 interface PersistResult {
   persist: (updater: (cfg: any) => void) => Promise<void>;

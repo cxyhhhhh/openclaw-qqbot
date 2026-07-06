@@ -15,7 +15,7 @@
  */
 import '@tencent-connect/qqbot-nodejs';
 import type { AssembledBody } from './dispatch/body-assembler.js';
-import type { ProcessedAttachments } from './gateway/attachment-middleware.js';
+import type { ProcessedAttachments } from './middleware/attachment.js';
 
 declare module '@tencent-connect/qqbot-nodejs' {
   interface MiddlewareState {

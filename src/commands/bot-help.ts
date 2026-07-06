@@ -29,6 +29,7 @@ export function botHelp(_account: ResolvedQQBotAccount, allCommands: () => Slash
         const name = Array.isArray(cmd.name) ? cmd.name[0] : cmd.name;
         if (cmd.hidden) continue;
         if (isGroup && GROUP_EXCLUDED.has(name)) continue;
+        if (cmd.authorized && cmd.authorized(ctx as any) !== true) continue;
         lines.push(`<qqbot-cmd-input text="/${name}" show="/${name}"/> ${cmd.description ?? ''}`);
       }
 

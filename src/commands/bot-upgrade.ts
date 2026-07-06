@@ -2,6 +2,7 @@ import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { getPackageVersion } from '../utils/pkg-version.js';
 import { getUpdateInfo } from '../features/update-checker.js';
+import { checkCommandAuth } from './config-util.js';
 
 const PLUGIN_VERSION = getPackageVersion();
 const DEFAULT_UPGRADE_URL = 'https://docs.qq.com/doc/DSGxOZk1oVnVKVkpq';
@@ -13,6 +14,7 @@ export function botUpgrade(account: ResolvedQQBotAccount): SlashCommand {
     name: 'bot-upgrade',
     description: '检查更新并查看升级指引',
     scope: 'c2c',
+    authorized: checkCommandAuth,
     usage: [
       '/bot-upgrade              检查是否有新版本',
     ].join('\n'),

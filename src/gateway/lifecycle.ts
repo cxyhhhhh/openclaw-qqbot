@@ -75,7 +75,6 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
   await gw.start(
     {
       onReady: () => {
-        log?.info(`[qqbot:${account.accountId}] Gateway ready`);
         saveCredentialBackup(account.accountId, account.appId, account.clientSecret);
         ctx.setStatus({
           ...ctx.getStatus(),
@@ -104,11 +103,12 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
 async function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: PluginLogger): Promise<void> {
   // 1. 图片代理服务器（仅首次启动）
   if (account.imageServerBaseUrl && !isImageServerRunning()) {
+    const imgLog = log.child('image');
     try {
       startImageServer({ baseUrl: account.imageServerBaseUrl });
-      log?.info(`[qqbot:${account.accountId}] Image server started`);
+      imgLog.info('Image server started');
     } catch (e) {
-      log?.error(`[qqbot:${account.accountId}] Image server failed: ${e}`);
+      imgLog.error(`Image server failed: ${e}`);
     }
   }
 
@@ -120,19 +120,20 @@ async function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: Plugin
     await existing.stop();
     unregisterApprovalHandler(account.accountId);
   }
+  const approvalLog = log.child('approval');
   try {
     const handler = new QQBotApprovalHandler({
       accountId: account.accountId,
       appId: account.appId,
       clientSecret: account.clientSecret,
       cfg,
-      log,
+      log: approvalLog,
     });
     registerApprovalHandler(account.accountId, handler);
     await handler.start();
-    log?.info(`[qqbot:${account.accountId}] Approval handler registered`);
+    approvalLog.info('registered');
   } catch (e) {
-    log?.debug?.(`[qqbot:${account.accountId}] Approval handler not available: ${e}`);
+    approvalLog.debug(`not available: ${e}`);
   }
 }
 

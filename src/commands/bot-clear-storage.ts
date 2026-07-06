@@ -3,6 +3,7 @@ import type { ResolvedQQBotAccount } from '../types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getQQBotDataDir } from '../utils/platform.js';
+import { checkCommandAuth } from './config-util.js';
 
 /** /bot-clear-storage — 清理通过QQBot对话产生的文件以及下载的资源 */
 export function botClearStorage(account: ResolvedQQBotAccount): SlashCommand {
@@ -10,6 +11,7 @@ export function botClearStorage(account: ResolvedQQBotAccount): SlashCommand {
     name: 'bot-clear-storage',
     description: '清理通过QQBot对话产生的文件以及下载的资源（保存在 OpenClaw 运行环境的主机上）',
     scope: 'c2c',
+    authorized: checkCommandAuth,
     usage: `/bot-clear-storage
 
 清理 OpenClaw 运行环境中与当前账户相关的本地缓存文件，

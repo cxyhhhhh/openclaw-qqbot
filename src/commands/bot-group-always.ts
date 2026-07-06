@@ -1,6 +1,6 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
-import { updateAccountConfig } from './config-util.js';
+import { updateAccountConfig, checkCommandAuth } from './config-util.js';
 
 /** /bot-group-always — 修改群消息默认响应模式 */
 export function botGroupAlways(account: ResolvedQQBotAccount, getRuntime: () => any): SlashCommand {
@@ -8,6 +8,7 @@ export function botGroupAlways(account: ResolvedQQBotAccount, getRuntime: () => 
     name: ['bot-group-always', 'bot-group-allways'],
     description: '修改群消息默认响应模式',
     scope: 'c2c',
+    authorized: checkCommandAuth,
     usage: [
       '/bot-group-always on   AI 自主判断何时发言（无需 @）',
       '/bot-group-always off  仅在被 @ 时回复',

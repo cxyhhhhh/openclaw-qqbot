@@ -11,7 +11,6 @@ import {
   contentSanitizer,
   rateLimiter,
   concurrencyGuard,
-  accessPolicy,
   mentionGate,
   quoteRef,
   historyBuffer,
@@ -22,10 +21,11 @@ import {
 } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { buildCommandList } from '../commands/index.js';
-import { attachmentProcessor } from './attachment-middleware.js';
+import { attachmentProcessor } from '../middleware/attachment.js';
 import { assembleBody } from '../dispatch/body-assembler.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
-import { createPolicyInjector } from './policy-injector.js';
+import { createPolicyInjector } from '../middleware/policy-injector.js';
+import { dynamicAccessControl } from '../middleware/access-control.js';
 
 export interface MiddlewareSetupOptions {
   /** 获取 runtime */
@@ -36,25 +36,21 @@ export interface MiddlewareSetupOptions {
  * 为 QQBot 实例编排完整的中间件链
  */
 export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts: MiddlewareSetupOptions): void {
-  const config = account.config;
-
   // 1. 错误兜底（最外层洋葱皮）
   bot.use(errorHandler());
 
   // 2. 消息过滤：bot 回声 + 消息去重
   bot.use(messageFilter());
 
-  // 3. 访问控制（黑白名单）
-  if (config.allowFrom?.length) {
-    bot.use(accessPolicy({
-      c2c: { mode: 'allowlist', allow: config.allowFrom },
-      group: { mode: 'allowlist', allow: config.allowFrom },
-    }));
-  }
-
-  // 4. 动态策略注入 — 每条消息解析群配置注入 ctx.state.policy
-  //    后续 mentionGate / historyBuffer 自动从 ctx.state.policy 读取动态策略
+  // 3. 动态策略注入 — 每条消息注入 ctx.state.policy
+  //    后续 dynamicAccessControl / mentionGate / historyBuffer 自动读取
   bot.use(createPolicyInjector(account));
+
+  // 4. 动态访问控制 — 从 ctx.state.policy 动态读取，支持 pairing
+  bot.use(dynamicAccessControl({
+    accountId: account.accountId,
+    getRuntime: opts.getRuntime,
+  }));
 
   // 5. 群聊 @bot 门控（从 ctx.state.policy.group 读取动态配置）
   bot.use(mentionGate());

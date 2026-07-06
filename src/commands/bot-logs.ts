@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getQQBotDataDir } from '../utils/platform.js';
+import { checkCommandAuth } from './config-util.js';
 
 const MAX_LINES_PER_FILE = 1000;
 const MAX_FILES = 4;
@@ -59,6 +60,7 @@ export function botLogs(): SlashCommand {
     name: 'bot-logs',
     description: '导出本地日志文件',
     scope: 'c2c',
+    authorized: checkCommandAuth,
     usage: [
       '/bot-logs',
       '',

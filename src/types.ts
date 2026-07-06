@@ -68,7 +68,7 @@ export interface QQBotAccountConfig {
   appId?: string;
   clientSecret?: string;
   clientSecretFile?: string;
-  dmPolicy?: "open" | "pairing" | "allowlist";
+  dmPolicy?: "open" | "pairing" | "allowlist" | "disabled";
   allowFrom?: string[];
   /** 群消息策略（默认 allowlist） */
   groupPolicy?: GroupPolicy;

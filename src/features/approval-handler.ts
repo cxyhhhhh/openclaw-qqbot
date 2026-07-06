@@ -202,7 +202,7 @@ export class QQBotApprovalHandler {
     if (this.started) return;
     this.started = true;
     const { log } = this.opts;
-    log?.info(`[qqbot:${this.opts.accountId}] approval-handler: starting`);
+    log?.debug?.(`[qqbot:${this.opts.accountId}] approval-handler: starting`);
 
     // 动态加载 gateway-runtime（兼容旧版框架 / pnpm 环境）
     const gatewayRuntime = loadApprovalGatewayRuntime();
@@ -220,7 +220,7 @@ export class QQBotApprovalHandler {
         onEvent: (evt: EventFrame) => this.handleGatewayEvent(evt),
         onHelloOk: () => {
           this.connected = true;
-          log?.info(`[qqbot:${this.opts.accountId}] approval-handler: connected to gateway`);
+          log?.debug?.(`[qqbot:${this.opts.accountId}] approval-handler: connected to gateway`);
         },
         onConnectError: (err: { message: string }) => log?.error(`[qqbot:${this.opts.accountId}] approval-handler: connect error: ${err.message}`),
         onClose: (code: number, reason: string) => {

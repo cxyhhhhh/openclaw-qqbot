@@ -1,6 +1,6 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import { getAdapters } from '../runtime-adapter/resolve.js';
-import { updateGlobalConfig } from './config-util.js';
+import { updateGlobalConfig, checkCommandAuth } from './config-util.js';
 
 /** 审批预设配置 */
 const PRESETS: Record<string, { security: string; ask: string; desc: string }> = {
@@ -49,6 +49,7 @@ export function botApprove(getRuntime: () => any): SlashCommand {
     name: 'bot-approve',
     description: '管理命令执行审批配置',
     scope: 'c2c',
+    authorized: checkCommandAuth,
     usage: [
       '/bot-approve            查看操作指引',
       '/bot-approve on         开启审批（白名单模式，推荐）',

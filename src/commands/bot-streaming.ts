@@ -1,6 +1,6 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
-import { updateAccountConfig } from './config-util.js';
+import { updateAccountConfig, checkCommandAuth } from './config-util.js';
 
 /** /bot-streaming — 一键开关流式消息 */
 export function botStreaming(account: ResolvedQQBotAccount, getRuntime: () => any): SlashCommand {
@@ -8,6 +8,7 @@ export function botStreaming(account: ResolvedQQBotAccount, getRuntime: () => an
     name: 'bot-streaming',
     description: '一键开关流式消息',
     scope: 'c2c',
+    authorized: checkCommandAuth,
     usage: `/bot-streaming
 
 查看当前流式消息状态，或切换开/关。

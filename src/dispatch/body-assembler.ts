@@ -23,7 +23,7 @@ import type {
   HistoryEntry,
 } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
-import type { ProcessedAttachments } from '../gateway/attachment-middleware.js';
+import type { ProcessedAttachments } from '../middleware/attachment.js';
 
 // ── 协议常量 ─────────────────────────────
 const QUOTE_BEGIN = '[Quoted message begins]';
