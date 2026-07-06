@@ -25,6 +25,7 @@ import { attachmentProcessor } from '../middleware/attachment.js';
 import { assembleBody } from '../dispatch/body-assembler.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 import { createPolicyInjector } from '../middleware/policy-injector.js';
+import { getHistoryStore } from '../features/history-store.js';
 import { dynamicAccessControl } from '../middleware/access-control.js';
 
 export interface MiddlewareSetupOptions {
@@ -56,7 +57,7 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   bot.use(mentionGate());
 
   // 6. 内容清洗（去 @marker、表情标签、多余空白）
-  bot.use(contentSanitizer());
+  bot.use(contentSanitizer({ parseFaceTags: true }));
 
   // 7. 三层限流（sender / group / global）
   bot.use(rateLimiter());
@@ -98,7 +99,7 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   }));
 
   // 11. 群历史缓冲（limit 从 ctx.state.policy.group.historyLimit 读取）
-  bot.use(historyBuffer());
+  bot.use(historyBuffer({ store: getHistoryStore() }));
 
   // 12. 附件处理（语音 STT 转录 + 图片/文件下载）
   bot.use(attachmentProcessor({ getRuntime: opts.getRuntime }));
@@ -106,7 +107,7 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   // 13. 上下文组装（构建框架规约的 body）
   bot.use(envelopeFormatter({
     format: (ctx) => {
-      const assembled = assembleBody(ctx, ctx.message as never, account);
+      const assembled = assembleBody(ctx, ctx.message as never, account, opts.getRuntime);
       (ctx.state as Record<string, unknown>).assembledBody = assembled;
       return assembled.agentBody;
     },

@@ -19,7 +19,8 @@ import { sendText, sendMedia, getGateway } from '../outbound/outbound-service.js
 import { deliverReply, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
 import { DeliverDebouncer } from '../outbound/debounce.js';
 import { StreamingController, shouldUseStreaming } from '../outbound/streaming-controller.js';
-import { getAdapters, type RuntimeAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../runtime-adapter/resolve.js';
+import { clearGroupHistory } from '../features/history-store.js';
 
 /**
  * 将经过中间件处理的入站消息转发给 OpenClaw AI
@@ -67,9 +68,6 @@ export async function dispatchToOpenClaw(
   const agentId = route.agentId ?? 'default';
   const storePath = adapters.resolveStorePath?.((cfg as any)?.session?.store, { agentId }) ?? '';
 
-  const isGroup = envelope.chatScope === 'group';
-  const webBody = renderWebBody(adapters, cfg, assembled, msg, isGroup);
-
   const ctxPayload = adapters.buildInboundContext?.({
     channel: 'qqbot',
     accountId: route.accountId,
@@ -84,7 +82,7 @@ export async function dispatchToOpenClaw(
       label: assembled.systemPrompt,
     },
     message: {
-      body: webBody,
+      body: assembled.webBody,
       bodyForAgent: assembled.agentBody,
       rawBody: assembled.rawBody,
       commandBody: assembled.rawBody,
@@ -213,13 +211,16 @@ export async function dispatchToOpenClaw(
                 }
               },
             },
-            replyOptions: streamingController
-              ? {
-                  onPartialReply: async (p: { text?: string }) => {
-                    if (p.text) await streamingController.onPartialReply(p.text);
-                  },
-                }
-              : undefined,
+            replyOptions: {
+              runId: envelope.messageId,
+              ...(streamingController
+                ? {
+                    onPartialReply: async (p: { text?: string }) => {
+                      if (p.text) await streamingController.onPartialReply(p.text);
+                    },
+                  }
+                : {}),
+            },
           });
         },
       }),
@@ -227,6 +228,11 @@ export async function dispatchToOpenClaw(
   });
 
   dlog?.debug(`inboundRun completed sessionKey=${route.sessionKey}`);
+
+  // 群消息回复后清空历史缓存（避免下次 @ 时重复组包）
+  if (envelope.chatScope === 'group') {
+    clearGroupHistory(envelope.groupId ?? envelope.senderId);
+  }
 
   if (streamingController && !streamingController.isTerminal) {
     await streamingController.finalize();
@@ -260,37 +266,4 @@ function createStreamingController(
   });
 }
 
-function renderWebBody(
-  adapters: RuntimeAdapters,
-  cfg: unknown,
-  assembled: AssembledBody,
-  msg: QQBotInboundMessage,
-  isGroup: boolean,
-): string {
-  if (!adapters.formatEnvelope) return assembled.webBody;
-  try {
-    const envelopeOpts = adapters.resolveEnvelopeFormatOptions?.(cfg);
-    return adapters.formatEnvelope({
-      channel: 'qqbot',
-      from: msg.senderName ?? msg.senderId,
-      timestamp: parseTimestamp(msg.timestamp),
-      body: assembled.webBody,
-      chatType: isGroup ? 'group' : 'direct',
-      sender: { id: msg.senderId, name: msg.senderName },
-      envelope: envelopeOpts,
-    });
-  } catch {
-    return assembled.webBody;
-  }
-}
 
-function parseTimestamp(ts: string | number | undefined): number {
-  if (typeof ts === 'number') return ts;
-  if (typeof ts === 'string') {
-    const n = Number(ts);
-    if (!Number.isNaN(n)) return n;
-    const d = new Date(ts).getTime();
-    if (!Number.isNaN(d)) return d;
-  }
-  return Date.now();
-}

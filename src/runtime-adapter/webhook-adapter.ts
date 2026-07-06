@@ -120,7 +120,7 @@ function createSharedHandler(path: string, log: PluginLogger) {
             req, res, maxBytes: 1_048_576, timeoutMs: 30_000,
           });
           if (!bodyResult.ok) {
-            log.warn?.(`[webhook] body rejected: ${bodyResult.reason ?? 'unknown'}`);
+            log.warn?.(`[webhook] body rejected`);
             return;
           }
 

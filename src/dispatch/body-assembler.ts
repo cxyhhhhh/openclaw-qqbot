@@ -24,6 +24,7 @@ import type {
 } from '@tencent-connect/qqbot-nodejs';
 import type { ResolvedQQBotAccount } from '../types.js';
 import type { ProcessedAttachments } from '../middleware/attachment.js';
+import { getAdapters } from '../runtime-adapter/resolve.js';
 
 // ── 协议常量 ─────────────────────────────
 const QUOTE_BEGIN = '[Quoted message begins]';
@@ -51,6 +52,7 @@ export function assembleBody(
   ctx: MiddlewareContext,
   msg: QQBotInboundMessage,
   account: ResolvedQQBotAccount,
+  getRuntime?: () => any,
 ): AssembledBody {
   const rawBody = msg.content ?? '';
   const isGroup = msg.kind === 'group';
@@ -70,7 +72,7 @@ export function assembleBody(
 
   // ── Layer 3: userMessage（群带 [sender] 前缀 + (@you)，合并消息特殊处理） ──
   const userMessage = mergedMessages && mergedMessages.length > 0
-    ? buildMergedUserMessage({ messages: mergedMessages, quotePart, isGroup, wasMentioned })
+    ? buildMergedUserMessage({ messages: mergedMessages, quotePart, isGroup, wasMentioned, getRuntime })
     : buildUserMessage({ msg, userContent, quotePart, isGroup, wasMentioned });
 
   // ── Layer 4: dynamicCtx（媒体元数据块） ──
@@ -85,8 +87,15 @@ export function assembleBody(
     history,
   });
 
-  // ── webBody（暂用 userContent；后续可对接 runtime.channel.reply.formatInboundEnvelope） ──
-  const webBody = userContent;
+  // ── webBody（合并消息包含全部前置 + 最后一条 + quotePart，对齐 agentBody） ──
+  const bodyContent = mergedMessages && mergedMessages.length > 0
+    ? userMessage
+    : `${quotePart}${userContent}`;
+
+  // ── webBody 外层 envelope 渲染（用 formatInboundEnvelope 包装） ──
+  const webBody = getRuntime
+    ? renderWebBody(getRuntime, bodyContent, msg, isGroup)
+    : bodyContent;
 
   const systemPrompt = account.systemPrompt?.trim() || undefined;
 
@@ -107,11 +116,15 @@ function buildUserContent(sanitizedRaw: string, processed: ProcessedAttachments 
   return sanitized + attachmentInfo;
 }
 
-/** Layer 2：[Quoted message begins]…[Quoted message ends] */
+/** Layer 2：[Quoted message begins]…[Quoted message ends]，含 sender 信息 */
 function buildQuotePart(quote: ResolvedQuote | undefined): string {
   if (!quote) return '';
+  const sender = quote.entry?.senderName
+    ? `${quote.entry.senderName} (${quote.entry.senderId})`
+    : '';
+  const senderLine = sender ? `${sender}: ` : '';
   const text = quote.text || 'Original content unavailable';
-  return `${QUOTE_BEGIN}\n${text}\n${QUOTE_END}\n`;
+  return `${QUOTE_BEGIN}\n${senderLine}${text}\n${QUOTE_END}\n`;
 }
 
 /** Layer 3：[Sender] {quote}{content}{(@you)?} */
@@ -138,8 +151,9 @@ function buildMergedUserMessage(input: {
   quotePart: string;
   isGroup: boolean;
   wasMentioned: boolean;
+  getRuntime?: () => any;
 }): string {
-  const { messages, quotePart, isGroup, wasMentioned } = input;
+  const { messages, quotePart, isGroup, wasMentioned, getRuntime } = input;
   if (messages.length <= 1) {
     const single = messages[0]!;
     return buildUserMessage({
@@ -151,33 +165,44 @@ function buildMergedUserMessage(input: {
     });
   }
 
-  const preceding = messages.slice(0, -1);
-  const last = messages[messages.length - 1]!;
+  const formatEnvelope = getRuntime
+    ? getAdapters(getRuntime()).formatEnvelope
+    : null;
 
-  const formatOne = (ctx: MiddlewareContext): string => {
-    const m = ctx.message;
-    const content = (m.content ?? '').trim();
-    if (!isGroup) return content;
-    const label = formatSenderLabel(m.senderName, m.senderId);
-    return `[${label}]: ${content}`;
-  };
+  const lines = messages.map((ctx, i) => {
+    const isLast = i === messages.length - 1;
+    const line = formatMergedLine(ctx, { isGroup, isLast, wasMentioned, formatEnvelope });
+    return line && isLast ? `${quotePart}${line}` : line;
+  }).filter(Boolean);
 
-  const precedingLines = preceding.map(formatOne).filter(Boolean);
-  const atYouTag = isGroup && wasMentioned ? ' (@you)' : '';
-  const lastLine = formatOne(last);
-
-  // 全部同一个人发的（私聊或群聊单人连续发言）→ 直接拼接
   if (!isGroup || allSameSender(messages)) {
-    return [...precedingLines, lastLine].join('\n');
+    return lines.join('\n');
   }
 
-  // 群聊多人 → 上下文段落包装
-  return [
-    MERGE_CTX_START,
-    ...precedingLines,
-    MERGE_CTX_END,
-    `${lastLine}${atYouTag}`,
-  ].join('\n');
+  const last = lines.pop()!;
+  return [MERGE_CTX_START, ...lines, MERGE_CTX_END, last].join('\n');
+}
+
+function formatMergedLine(
+  ctx: MiddlewareContext,
+  opts: { isGroup: boolean; isLast: boolean; wasMentioned: boolean; formatEnvelope: ((p: Record<string, unknown>) => string) | null },
+): string {
+  const m = ctx.message;
+  const content = (m.content ?? '').trim();
+
+  if (opts.formatEnvelope && opts.isGroup) {
+    const atYouTag = opts.isLast && opts.wasMentioned ? ' (@you)' : '';
+    return opts.formatEnvelope({
+      channel: 'qqbot',
+      from: formatSenderLabel(m.senderName, m.senderId),
+      timestamp: normalizeTimestamp(m.timestamp),
+      body: content + atYouTag,
+      chatType: 'group',
+    });
+  }
+  return opts.isGroup
+    ? `${formatSenderLabel(m.senderName, m.senderId)}: ${content}`
+    : content;
 }
 
 function allSameSender(messages: MiddlewareContext[]): boolean {
@@ -241,6 +266,7 @@ function buildAgentBody(input: {
     return userContent;
   }
 
+  // 群被@ + 有历史 → 叠历史前缀
   if (isGroup && wasMentioned && history && history.length > 0) {
     const historyText = history
       .map((h) => {
@@ -258,4 +284,36 @@ function buildAgentBody(input: {
 function formatSenderLabel(name: string | undefined, id: string): string {
   if (!name) return id;
   return name.includes(id) ? name : `${name} (${id})`;
+}
+
+/** webBody 外层 envelope 渲染 */
+function renderWebBody(
+  getRuntime: () => any,
+  bodyContent: string,
+  msg: QQBotInboundMessage,
+  isGroup: boolean,
+): string {
+  try {
+    const { formatEnvelope } = getAdapters(getRuntime());
+    if (!formatEnvelope) return bodyContent;
+    return formatEnvelope({
+      channel: 'qqbot',
+      from: msg.senderName ?? msg.senderId,
+      timestamp: normalizeTimestamp(msg.timestamp),
+      body: bodyContent,
+      chatType: isGroup ? 'group' : 'direct',
+    });
+  } catch {
+    return bodyContent;
+  }
+}
+
+/** timestamp 归一化到 epoch ms */
+function normalizeTimestamp(ts: string | number | undefined): number {
+  if (typeof ts === 'number') return ts;
+  if (typeof ts === 'string') {
+    const d = new Date(ts).getTime();
+    if (!Number.isNaN(d)) return d;
+  }
+  return Date.now();
 }
