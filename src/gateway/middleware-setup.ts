@@ -40,7 +40,7 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   bot.use(errorHandler());
 
   // 2. 消息过滤：bot 回声 + 消息去重
-  bot.use(messageFilter());
+  bot.use(messageFilter({ skipSelfEcho: false }));
 
   // 3. 动态策略注入 — 每条消息注入 ctx.state.policy
   //    后续 dynamicAccessControl / mentionGate / historyBuffer 自动读取

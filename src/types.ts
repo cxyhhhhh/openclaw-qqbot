@@ -137,6 +137,17 @@ export interface QQBotAccountConfig {
    */
   streaming?: boolean;
   /**
+   * 事件传输模式（默认 websocket）。
+   * - `"websocket"`: 长连接 WebSocket
+   * - `"webhook"`: HTTP POST 回调
+   */
+  transport?: "websocket" | "webhook";
+  /** Webhook 模式配置 */
+  webhook?: {
+    /** 回调路径（默认 /qqbot/webhook） */
+    path?: string;
+  };
+  /**
    * STT (语音转文字) 配置
    * 配置后，收到语音消息时会自动调用 STT 服务转录为文字
    */

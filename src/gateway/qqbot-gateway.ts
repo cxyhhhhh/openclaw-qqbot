@@ -21,6 +21,7 @@ import { setupMiddlewares } from './middleware-setup.js';
 import { handleMessage, handleInteraction } from './event-handlers.js';
 import { getQQBotDataDir } from '../utils/platform.js';
 import { buildUserAgent } from '../bot-instance.js';
+import { createPluginWebhookAdapter } from '../runtime-adapter/webhook-adapter.js';
 
 export interface GatewayCallbacks {
   onReady?: () => void;
@@ -45,6 +46,8 @@ export class QQBotGateway {
 
     const dataDir = getQQBotDataDir(account.accountId);
 
+    const isWebhook = account.config.transport === 'webhook';
+
     this.bot = new QQBot({
       appId: account.appId,
       appSecret: account.clientSecret,
@@ -53,6 +56,8 @@ export class QQBotGateway {
       userAgent: buildUserAgent(account.userAgentSuffix),
       baseUrl: process.env.QQBOT_BASE_URL?.replace(/\/+$/, '') || 'https://api.sgroup.qq.com',
       tokenBaseUrl: process.env.QQBOT_TOKEN_BASE_URL?.replace(/\/+$/, '') || 'https://bots.qq.com',
+      transport: account.config.transport,
+      webhook: isWebhook ? { path: account.config.webhook?.path, server: createPluginWebhookAdapter({ account, log: this.log }) } : undefined,
       sessionPersistence: kvSessionPersistence({
         store: new FileKVStore({ dir: dataDir, fileName: 'session.json' }),
         accountId: account.accountId,
