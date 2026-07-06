@@ -13,6 +13,7 @@ import {
   type MessageResponse,
   type StreamSession,
 } from '@tencent-connect/qqbot-nodejs';
+import os from 'node:os';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import type { ResolvedQQBotAccount } from '../types.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
@@ -22,6 +23,7 @@ import { handleMessage, handleInteraction } from './event-handlers.js';
 import { getQQBotDataDir } from '../utils/platform.js';
 import { buildUserAgent } from '../bot-instance.js';
 import { createPluginWebhookAdapter } from '../runtime-adapter/webhook-adapter.js';
+import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 
 export interface GatewayCallbacks {
   onReady?: () => void;
@@ -65,6 +67,9 @@ export class QQBotGateway {
       tokenPrefetch: 'sync',
       logger: this.log,
     });
+
+    // 包装 sendText/sendMedia，回复后自动写入 ref-index store
+    this.wrapBotSendForRefIndex();
 
     // concurrencyGuard 的 merge 策略合并后会继续走完剩余中间件链，
     // 最终与单条消息一样统一由下方 bot.on('message') 处理转发，
@@ -115,10 +120,7 @@ export class QQBotGateway {
   }
 
   async sendText(target: ReplyTarget, text: string, opts?: SendOptions): Promise<MessageResponse> {
-    const resolvedTarget: ReplyTarget = opts?.msgId
-      ? { ...target, msgId: opts.msgId }
-      : target;
-    return this.bot.sendText(resolvedTarget, text);
+    return this.bot.sendText(attachMsgId(target, opts), text);
   }
 
   async sendMedia(
@@ -126,9 +128,7 @@ export class QQBotGateway {
     source: string,
     opts?: SendOptions & { fileType?: MediaFileType },
   ): Promise<MessageResponse> {
-    const resolvedTarget: ReplyTarget = opts?.msgId
-      ? { ...target, msgId: opts.msgId }
-      : target;
+    const resolvedTarget = attachMsgId(target, opts);
     const fileType = opts?.fileType ?? MediaFileType.IMAGE;
     const sourceOpts = resolveMediaSource(source);
     const result = await this.bot.sendMedia({
@@ -145,35 +145,22 @@ export class QQBotGateway {
     source: { url?: string; base64?: string; localPath?: string },
     opts?: SendOptions,
   ): Promise<MessageResponse> {
-    const resolvedTarget: ReplyTarget = opts?.msgId
-      ? { ...target, msgId: opts.msgId }
-      : target;
+    const resolvedTarget = attachMsgId(target, opts);
 
     if (source.base64) {
       const result = await this.bot.sendMedia({
-        target: resolvedTarget,
-        fileType: MediaFileType.VOICE,
-        fileData: source.base64,
-        content: opts?.text,
+        target: resolvedTarget, fileType: MediaFileType.VOICE, fileData: source.base64, content: opts?.text,
       });
       return result.message ?? { id: '', timestamp: Date.now() };
     }
-
     if (source.localPath) {
       const result = await this.bot.sendMedia({
-        target: resolvedTarget,
-        fileType: MediaFileType.VOICE,
-        localPath: source.localPath,
-        content: opts?.text,
+        target: resolvedTarget, fileType: MediaFileType.VOICE, localPath: source.localPath, content: opts?.text,
       });
       return result.message ?? { id: '', timestamp: Date.now() };
     }
-
     const result = await this.bot.sendMedia({
-      target: resolvedTarget,
-      fileType: MediaFileType.VOICE,
-      url: source.url!,
-      content: opts?.text,
+      target: resolvedTarget, fileType: MediaFileType.VOICE, url: source.url!, content: opts?.text,
     });
     return result.message ?? { id: '', timestamp: Date.now() };
   }
@@ -183,15 +170,10 @@ export class QQBotGateway {
     source: string,
     opts?: SendOptions,
   ): Promise<MessageResponse> {
-    const resolvedTarget: ReplyTarget = opts?.msgId
-      ? { ...target, msgId: opts.msgId }
-      : target;
+    const resolvedTarget = attachMsgId(target, opts);
     const sourceOpts = resolveMediaSource(source);
     const result = await this.bot.sendMedia({
-      target: resolvedTarget,
-      fileType: MediaFileType.VIDEO,
-      ...sourceOpts,
-      content: opts?.text,
+      target: resolvedTarget, fileType: MediaFileType.VIDEO, ...sourceOpts, content: opts?.text,
     });
     return result.message ?? { id: '', timestamp: Date.now() };
   }
@@ -201,16 +183,10 @@ export class QQBotGateway {
     source: string,
     opts?: SendOptions & { fileName?: string },
   ): Promise<MessageResponse> {
-    const resolvedTarget: ReplyTarget = opts?.msgId
-      ? { ...target, msgId: opts.msgId }
-      : target;
+    const resolvedTarget = attachMsgId(target, opts);
     const sourceOpts = resolveMediaSource(source);
     const result = await this.bot.sendMedia({
-      target: resolvedTarget,
-      fileType: MediaFileType.FILE,
-      ...sourceOpts,
-      fileName: opts?.fileName,
-      content: opts?.text,
+      target: resolvedTarget, fileType: MediaFileType.FILE, ...sourceOpts, fileName: opts?.fileName, content: opts?.text,
     });
     return result.message ?? { id: '', timestamp: Date.now() };
   }
@@ -224,6 +200,68 @@ export class QQBotGateway {
   async sendTyping(target: ReplyTarget): Promise<void> {
     await this.bot.sendTyping(target);
   }
+
+  private wrapBotSendForRefIndex(): void {
+    const { accountId, appId } = this.account;
+    const senderName = this.account.config.name ?? appId;
+
+    const storeEntry = (msg: MessageResponse, content: string, scope: string): void => {
+      const refIdx = msg.ext_info?.ref_idx;
+      if (!refIdx) return;
+      const entry = {
+        messageId: msg.id, content, senderId: appId, senderName,
+        timestamp: typeof msg.timestamp === 'number' ? new Date(msg.timestamp).toISOString() : msg.timestamp,
+        isBot: true, scope,
+      };
+      getPersistedRefIndexStore(accountId).set(refIdx, entry as any);
+    };
+
+    // sendText → 直接捕获 text content
+    const origSendText = this.bot.sendText.bind(this.bot);
+    this.bot.sendText = async (target, text, ...rest) => {
+      const result = await origSendText(target, text, ...rest);
+      storeEntry(result, text, target.scope);
+      return result;
+    };
+
+    // sendMedia → ext_info 在 result.message 里
+    const origSendMedia = this.bot.sendMedia.bind(this.bot);
+    this.bot.sendMedia = async (params: any) => {
+      const result = await origSendMedia(params);
+      const msg = (result as any).message as MessageResponse | undefined;
+      if (msg) storeEntry(msg, '', params.target?.scope ?? '');
+      return result;
+    };
+
+    // openStream → 流式消息 complete() 时才返回 ext_info.ref_idx
+    const origOpenStream = this.bot.openStream.bind(this.bot);
+    this.bot.openStream = (opts) => {
+      const session = origOpenStream(opts);
+      let lastContent = '';
+      const origUpdate = session.update.bind(session);
+      session.update = async (content: string) => {
+        lastContent = content;
+        return origUpdate(content);
+      };
+      const origComplete = session.complete.bind(session);
+      session.complete = async (): Promise<any> => {
+        const result = await origComplete();
+        if (result?.ext_info?.ref_idx) {
+          getPersistedRefIndexStore(accountId).set(result.ext_info.ref_idx, {
+            messageId: result.id, content: lastContent, senderId: appId, senderName,
+            timestamp: typeof result.timestamp === 'number' ? new Date(result.timestamp).toISOString() : result.timestamp,
+            isBot: true, scope: opts.target?.scope ?? '',
+          } as any);
+        }
+        return result;
+      };
+      return session;
+    };
+  }
+}
+
+function attachMsgId(target: ReplyTarget, opts?: SendOptions): ReplyTarget {
+  return opts?.msgId ? { ...target, msgId: opts.msgId } : target;
 }
 
 function resolveMediaSource(source: string): { url?: string; localPath?: string; fileData?: string } {
@@ -244,7 +282,6 @@ function resolveMediaSource(source: string): { url?: string; localPath?: string;
     return { localPath: p };
   }
   if (source === '~' || source.startsWith('~/') || source.startsWith('~\\')) {
-    const os = require('node:os');
     return { localPath: source.replace(/^~/, os.homedir()) };
   }
   if (

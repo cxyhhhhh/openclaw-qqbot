@@ -23,7 +23,7 @@ const log = createPluginLogger({ prefix: '[ref-index]' });
 
 // ── 常量 ──
 
-const DEFAULT_MAX_ENTRIES = 2000;
+const DEFAULT_MAX_ENTRIES = 50000;
 const DEFAULT_FILENAME = 'ref-index.jsonl';
 /** 当磁盘 line 数超过 maxEntries * COMPACT_RATIO 时触发 compact */
 const COMPACT_RATIO = 2;
