@@ -107,8 +107,8 @@ export class QQBotGateway {
     });
 
     this.bot.on('interaction', (_ctx, event: InteractionEvent) => {
-      handleInteraction(event, this.account, this.runtime, this.log, (id) =>
-        this.bot.acknowledgeInteraction(id),
+      handleInteraction(event, this.account, this.runtime, this.log, (id, code, data) =>
+        this.bot.acknowledgeInteraction(id, code, data),
       ).catch((err) => {
         this.log.error(`Interaction error: ${err}`);
       });

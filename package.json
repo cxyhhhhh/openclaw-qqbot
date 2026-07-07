@@ -43,7 +43,7 @@
     "postinstall": "node scripts/postinstall-link-sdk.js 2>/dev/null || true"
   },
   "dependencies": {
-    "@tencent-connect/qqbot-nodejs": "npm:@tencent/qqbot-nodejs@0.0.0-dev.755650c6"
+    "@tencent-connect/qqbot-nodejs": "npm:@tencent/qqbot-nodejs@0.0.0-dev.8d9640ec"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
