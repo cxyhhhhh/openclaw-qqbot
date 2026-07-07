@@ -15,7 +15,8 @@ import type { ResolvedQQBotAccount } from '../types.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import { buildEnvelope } from './envelope-builder.js';
 import { assembleBody, type AssembledBody } from './body-assembler.js';
-import { sendText, sendMedia, getGateway } from '../outbound/outbound-service.js';
+import { sendText, getGateway } from '../outbound/outbound-service.js';
+import { sendMedia } from '../outbound/media-send.js';
 import { deliverReply, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
 
 import { DeliverDebouncer } from '../outbound/debounce.js';
@@ -131,12 +132,12 @@ export async function dispatchToOpenClaw(
     sendText: (to, text) => sendText({ to, text, accountId: account.accountId, replyToId: envelope.messageId, account }),
     sendMedia: (to, source, opts) => sendMedia({
       to,
+      source,
       text: opts?.text ?? '',
-      mediaUrl: source,
-      mediaKind: opts?.mediaKind,
-      accountId: account.accountId,
       replyToId: envelope.messageId,
-      account,
+      accountId: account.accountId,
+      agentId: route.agentId,
+      log: deliverCtx.log,
     }),
     textToSpeech: ttsRuntime?.textToSpeech
       ? (params) => ttsRuntime.textToSpeech(params)
@@ -187,6 +188,7 @@ export async function dispatchToOpenClaw(
         },
         runDispatch: () => {
           let blockDelivered = false;
+          const deliveredMediaUrls = new Set<string>();
           return adapters.dispatchReply!({
             ctx: ctxPayload,
             cfg,
@@ -195,9 +197,38 @@ export async function dispatchToOpenClaw(
                 try {
                   const kind = (info as any)?.kind as string | undefined;
                   dlog?.debug(`deliver kind=${kind ?? 'none'} textLen=${payload.text?.length ?? 0} audioAsVoice=${payload.audioAsVoice ?? false} mediaUrl=${payload.mediaUrl?.slice(0, 60) ?? 'none'} mediaUrls=${payload.mediaUrls?.length ?? 0}`);
+
+                  // ── block 带音频/媒体时优先发送（不发送文本，留流式处理） ──
+                  if (kind === 'block') {
+                    if (payload.audioAsVoice) {
+                      // TTS 语音：走完整 deliverReply（voice intent 消费文本）
+                      await deliverReply(payload, info, deliverCtx);
+                    } else {
+                      // 普通媒体（图片等）：只发媒体，文本留给流式
+                      const urls = payload.mediaUrls?.length
+                        ? payload.mediaUrls
+                        : payload.mediaUrl ? [payload.mediaUrl] : [];
+                      for (const url of urls) {
+                        try {
+                          await sendMedia({
+                            to: deliverCtx.qualifiedTarget, source: url, text: '',
+                            replyToId: deliverCtx.replyToId, accountId: deliverCtx.accountId,
+                            log: deliverCtx.log, agentId: deliverCtx.agentId,
+                          });
+                        } catch (err) {
+                          dlog?.error(`block media failed: ${err instanceof Error ? err.message : String(err)}`);
+                        }
+                      }
+                    }
+                  }
+
+                  // ── 流式收尾（跳过 block 文本正文，交给 onPartialReply 处理） ──
                   if (streamingController && !streamingController.shouldFallbackToStatic) {
-                    await streamingController.finalize();
+                    if (kind !== 'block') {
+                      await streamingController.finalize();
+                    }
                     if (!streamingController.shouldFallbackToStatic) {
+                      if (kind === 'block') return; // block 正文留流式
                       return;
                     }
                     dlog?.warn(`streaming fallback to static`);
@@ -206,6 +237,32 @@ export async function dispatchToOpenClaw(
                   if (kind === 'block') {
                     blockDelivered = true;
                   } else if (kind === 'final' && blockDelivered) {
+                    return;
+                  }
+
+                  // ── 工具产生的媒体（TTS 语音 / 生成图片等）：立即转发 ──
+                  if (kind === 'tool') {
+                    const toolMediaUrls: string[] = [];
+                    if (payload.mediaUrls?.length) toolMediaUrls.push(...payload.mediaUrls);
+                    if (payload.mediaUrl && !toolMediaUrls.includes(payload.mediaUrl)) toolMediaUrls.push(payload.mediaUrl);
+                    const newUrls = toolMediaUrls.filter((u) => !deliveredMediaUrls.has(u));
+                    for (const mediaUrl of newUrls) {
+                      try {
+                        await sendMedia({
+                          to: deliverCtx.qualifiedTarget,
+                          source: mediaUrl,
+                          text: '',
+                          replyToId: deliverCtx.replyToId,
+                          accountId: deliverCtx.accountId,
+                          log: deliverCtx.log,
+                          agentId: deliverCtx.agentId,
+                        });
+                        deliveredMediaUrls.add(mediaUrl);
+                        dlog?.info(`tool media forwarded url=${mediaUrl.slice(0, 60)}`);
+                      } catch (err) {
+                        dlog?.error(`tool media forward failed: ${err instanceof Error ? err.message : String(err)}`);
+                      }
+                    }
                     return;
                   }
 

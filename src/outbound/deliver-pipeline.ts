@@ -100,11 +100,7 @@ export async function deliverReply(
     if (ctx.textToSpeech && text) {
       const handled = await handleVoiceIntent(text, ctx);
       if (handled) {
-        // 语音发送成功后，附带的媒体仍需发送
-        if (hasMedia) {
-          await sendMediaUrls(ctx, mediaUrls);
-        }
-        return;
+        return; // 语音已发送，不再重复发送媒体或文本
       }
     }
     // TTS 不可用或合成失败 → 降级为纯文本 + 媒体

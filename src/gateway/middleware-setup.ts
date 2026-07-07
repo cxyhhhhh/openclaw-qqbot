@@ -93,7 +93,7 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   // 9. C2C 输入状态指示器
   bot.use(typingIndicator());
 
-  // 10. 引用消息解析（注入持久化 store，进程重启后引用上下文不丢失）
+  // 10. 引用消息解析（默认优先 msg_elements 获取文件名等丰富信息）
   bot.use(quoteRef({
     store: getPersistedRefIndexStore(account.accountId),
   }));

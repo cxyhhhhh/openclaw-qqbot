@@ -25,7 +25,6 @@ import { buildUserAgent } from '../bot-instance.js';
 import { createPluginWebhookAdapter } from '../runtime-adapter/webhook-adapter.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 import { getCachedMsgId } from '../features/msgid-cache.js';
-import fs from 'node:fs';
 
 export interface GatewayCallbacks {
   onReady?: () => void;
@@ -187,9 +186,8 @@ export class QQBotGateway {
   ): Promise<MessageResponse> {
     const resolvedTarget = attachMsgId(target, opts);
     const sourceOpts = resolveMediaSource(source);
-    const fileSource = await resolveFileSource(sourceOpts, target.scope);
     const result = await this.bot.sendMedia({
-      target: resolvedTarget, fileType: MediaFileType.FILE, ...fileSource, fileName: opts?.fileName, content: opts?.text,
+      target: resolvedTarget, fileType: MediaFileType.FILE, ...sourceOpts, fileName: opts?.fileName, content: opts?.text,
     });
     return result.message ?? { id: '', timestamp: Date.now() };
   }
@@ -208,11 +206,18 @@ export class QQBotGateway {
     const { accountId, appId } = this.account;
     const senderName = this.account.config.name ?? appId;
 
-    const storeEntry = (msg: MessageResponse, content: string, scope: string): void => {
+    const storeEntry = (msg: MessageResponse, content: string, scope: string, mediaKind?: string): void => {
       const refIdx = msg.ext_info?.ref_idx;
       if (!refIdx) return;
+      // 空内容降级为媒体类型标签
+      const finalContent = content || mediaKind
+        ? mediaKind === 'voice' ? '[语音]'
+        : mediaKind === 'image' ? '[图片]'
+        : mediaKind ? `[${mediaKind}]`
+        : content
+        : '';
       const entry = {
-        messageId: msg.id, content, senderId: appId, senderName,
+        messageId: msg.id, content: finalContent, senderId: appId, senderName,
         timestamp: typeof msg.timestamp === 'number' ? new Date(msg.timestamp).toISOString() : msg.timestamp,
         isBot: true, scope,
       };
@@ -232,7 +237,7 @@ export class QQBotGateway {
     this.bot.sendMedia = async (params: any) => {
       const result = await origSendMedia(params);
       const msg = (result as any).message as MessageResponse | undefined;
-      if (msg) storeEntry(msg, '', params.target?.scope ?? '');
+      if (msg) storeEntry(msg, '', params.target?.scope ?? '', params.mediaKind);
       return result;
     };
 
@@ -261,19 +266,6 @@ export class QQBotGateway {
       return session;
     };
   }
-}
-
-async function resolveFileSource(
-  sourceOpts: { url?: string; localPath?: string; fileData?: string },
-  scope: string,
-): Promise<{ url?: string; localPath?: string; fileData?: string }> {
-  if (sourceOpts.localPath && scope === 'c2c') {
-    try {
-      const buf = await fs.promises.readFile(sourceOpts.localPath);
-      return { fileData: buf.toString('base64') };
-    } catch { /* ignore, fall through */ }
-  }
-  return sourceOpts;
 }
 
 function attachMsgId(target: ReplyTarget, opts?: SendOptions): ReplyTarget {
