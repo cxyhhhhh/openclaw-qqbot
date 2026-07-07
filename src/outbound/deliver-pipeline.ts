@@ -50,6 +50,8 @@ export interface DeliverContext {
   cfg?: unknown;
   /** 日志 */
   log?: PluginLogger;
+  /** Agent ID（用于解析相对文件路径的工作区） */
+  agentId?: string;
 }
 
 /**
@@ -62,7 +64,16 @@ function resolveMediaUrls(payload: DeliverPayload): string[] {
   if (payload.mediaUrl) {
     return [payload.mediaUrl];
   }
-  return [];
+  // attachments[].path → 本地文件路径（findLocalPath() 展开可能相对路径）
+  return resolveAttachmentPaths(payload);
+}
+
+function resolveAttachmentPaths(payload: DeliverPayload): string[] {
+  const attachments = (payload as any).attachments as Array<{ path?: string; url?: string }> | undefined;
+  if (!attachments?.length) return [];
+  return attachments
+    .map((a) => a.url ?? a.path)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0);
 }
 
 /**
@@ -135,6 +146,7 @@ async function sendMediaUrls(ctx: DeliverContext, urls: string[]): Promise<void>
       replyToId: ctx.replyToId,
       accountId: ctx.accountId,
       log: ctx.log,
+      agentId: ctx.agentId,
     });
     if (result.error) {
       ctx.log?.error(`[media] ${result.error}`);

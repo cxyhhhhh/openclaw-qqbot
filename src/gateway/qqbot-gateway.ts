@@ -25,6 +25,7 @@ import { buildUserAgent } from '../bot-instance.js';
 import { createPluginWebhookAdapter } from '../runtime-adapter/webhook-adapter.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 import { getCachedMsgId } from '../features/msgid-cache.js';
+import fs from 'node:fs';
 
 export interface GatewayCallbacks {
   onReady?: () => void;
@@ -186,8 +187,9 @@ export class QQBotGateway {
   ): Promise<MessageResponse> {
     const resolvedTarget = attachMsgId(target, opts);
     const sourceOpts = resolveMediaSource(source);
+    const fileSource = await resolveFileSource(sourceOpts, target.scope);
     const result = await this.bot.sendMedia({
-      target: resolvedTarget, fileType: MediaFileType.FILE, ...sourceOpts, fileName: opts?.fileName, content: opts?.text,
+      target: resolvedTarget, fileType: MediaFileType.FILE, ...fileSource, fileName: opts?.fileName, content: opts?.text,
     });
     return result.message ?? { id: '', timestamp: Date.now() };
   }
@@ -259,6 +261,19 @@ export class QQBotGateway {
       return session;
     };
   }
+}
+
+async function resolveFileSource(
+  sourceOpts: { url?: string; localPath?: string; fileData?: string },
+  scope: string,
+): Promise<{ url?: string; localPath?: string; fileData?: string }> {
+  if (sourceOpts.localPath && scope === 'c2c') {
+    try {
+      const buf = await fs.promises.readFile(sourceOpts.localPath);
+      return { fileData: buf.toString('base64') };
+    } catch { /* ignore, fall through */ }
+  }
+  return sourceOpts;
 }
 
 function attachMsgId(target: ReplyTarget, opts?: SendOptions): ReplyTarget {

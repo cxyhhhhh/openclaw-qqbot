@@ -1,17 +1,15 @@
 /**
  * QQ Bot 流式消息控制器
  *
- * 职责（业务层）：
- *   1. 回复边界检测：基于原始文本前缀匹配，发现新消息时拼 "\n\n" 续上
- *   2. 降级判断：从未成功发出过任何分片 → fallback 为静态消息
+ * 核心约束：QQ 流式 API 替换模式下，已下发文本的**前缀不可变更**。
  *
- * SDK `StreamSession` 已经处理：
- *   - throttle / debounce
- *   - msg_seq / index / stream_msg_id 维护
- *   - 429 / 50002 重试退避
- *   - 替换语义（每次 update 是全量文本）
+ * 状态机：
+ *   IDLE → (first chunk) → STREAMING → (complete) → DONE
+ *                                      → (prefix changed) → DONE
+ *                                      → (new reply) → IDLE → …
  *
- * 输入侧由 `replyOptions.onPartialReply({ text })` 驱动，每次 text 是**全量**。
+ * onPartialReply(text) 输入：模型全量文本，持续增长。
+ * finalize()           标记：框架通知回复结束，用 lastAccepted 收尾。
  */
 
 import type { ReplyTarget, StreamSession } from '@tencent-connect/qqbot-nodejs';
@@ -20,208 +18,190 @@ import type { QQBotGateway } from '../gateway/qqbot-gateway.js';
 
 // ── 类型 ──
 
-export type StreamingPhase = 'idle' | 'streaming' | 'completed' | 'aborted';
+export type StreamingPhase = 'idle' | 'streaming' | 'done' | 'failed';
 
 export interface StreamingControllerDeps {
-  /** 已注册的 QQBot Gateway（提供 openStream） */
   gateway: QQBotGateway;
-  /** 流式目标（必须是 c2c） */
   target: ReplyTarget;
-  /** 账户 ID */
   accountId: string;
-  /** 用于被动回复的入站消息 ID */
   replyToId: string;
-  /** 日志 */
   log?: PluginLogger;
-  /** 节流毫秒（透传给 SDK StreamSession） */
-  throttleMs?: number;
 }
 
 // ── 控制器 ──
 
-/**
- * 流式控制器
- *
- * 通过 `onPartialReply(text)` 持续接收全量文本，
- * 通过 `finalize()` 标记终结，
- * 通过 `abort()` 中止。
- */
 export class StreamingController {
   private phase: StreamingPhase = 'idle';
   private session: StreamSession | null = null;
 
-  /** 最后一次收到的原始文本（用于边界检测） */
-  private lastRawFull = '';
-  /** 边界拼接前缀（检测到新回复时使用） */
-  private boundaryPrefix: string | null = null;
+  /** QQ 已接受的最新文本 — 单源真理 */
+  private lastAcceptedFull = '';
 
-  /** 已成功发送的流式分片计数（用于降级判断） */
+  /** 已成功发送的分片数（降级：=0 则走静态消息兜底） */
   private sentChunkCount = 0;
 
-  /** 串行队列：所有 onPartialReply / finalize 经此排队执行 */
+  /** 串行队列 */
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly deps: StreamingControllerDeps) {}
 
   // ── 公共访问器 ──
 
-  get currentPhase(): StreamingPhase {
-    return this.phase;
-  }
+  get currentPhase(): StreamingPhase { return this.phase; }
 
   get isTerminal(): boolean {
-    return this.phase === 'completed' || this.phase === 'aborted';
+    return this.phase === 'done' || this.phase === 'failed';
   }
 
-  /**
-   * 是否应降级到静态消息：终态 + 从未成功发出任何分片。
-   * 上层在 finalize 后据此判断是否走 `sendText` 兜底。
-   */
   get shouldFallbackToStatic(): boolean {
     return this.isTerminal && this.sentChunkCount === 0;
   }
 
-  // ── 主入口 ──
+  // ── 入口 ──
 
-  /**
-   * 处理一次 onPartialReply 回调（全量文本）
-   */
   onPartialReply(text: string): Promise<void> {
-    this.chain = this.chain.then(() => this.doPartialReply(text)).catch((err) => {
+    this.chain = this.chain.then(() => this.handleChunk(text)).catch((err) => {
       this.deps.log?.error(`onPartialReply error: ${err instanceof Error ? err.message : String(err)}`);
     });
     return this.chain as Promise<void>;
   }
 
-  /**
-   * 标记流式完成 — 终结当前会话或转入降级判断。
-   */
-  finalize(finalText?: string): Promise<void> {
-    this.chain = this.chain.then(() => this.doFinalize(finalText)).catch((err) => {
+  finalize(): Promise<void> {
+    this.chain = this.chain.then(() => this.handleFinalize()).catch((err) => {
       this.deps.log?.error(`finalize error: ${err instanceof Error ? err.message : String(err)}`);
     });
     return this.chain as Promise<void>;
   }
 
-  /**
-   * 显式中止 — 用于上游 abort 信号触发
-   */
   async abort(reason?: string): Promise<void> {
     if (this.isTerminal) return;
-    this.transitionTo('aborted', `abort: ${reason ?? 'manual'}`);
+    this.deps.log?.warn(`aborting stream reason=${reason ?? 'manual'} sent=${this.sentChunkCount}`);
     if (this.session) {
-      try {
-        await this.session.complete();
-      } catch (err) {
-        this.deps.log?.error(`abort complete failed: ${err instanceof Error ? err.message : String(err)}`);
+      try { await this.session.complete(); } catch (e) {
+        this.deps.log?.error(`abort complete failed: ${e instanceof Error ? e.message : String(e)}`);
       }
       this.session = null;
     }
+    this.transition('failed', `abort:${reason ?? 'manual'}`);
   }
 
-  // ── 内部：onPartialReply 串行体 ──
+  // ── 核心逻辑 ──
 
-  private async doPartialReply(text: string): Promise<void> {
-    if (this.isTerminal) return;
-    if (!text) return;
+  private async handleChunk(text: string): Promise<void> {
+    if (this.isTerminal || !text) return;
 
-    // 边界拼接：若已发生过边界，自动加前缀
-    const fullText = this.boundaryPrefix !== null ? this.boundaryPrefix + text : text;
-
-    // 回复边界检测（用原始文本前缀匹配）
-    if (this.lastRawFull && fullText.length > 0 && !fullText.startsWith(this.lastRawFull)) {
-      this.deps.log?.debug(
-        `reply boundary detected: prev=${this.lastRawFull.length} new=${fullText.length}`,
-      );
-      this.boundaryPrefix = this.lastRawFull + '\n\n';
-      const merged = this.boundaryPrefix + text;
-      this.lastRawFull = merged;
-      await this.ensureSessionWith(merged);
-    } else {
-      this.lastRawFull = fullText;
-      await this.ensureSessionWith(fullText);
-    }
-  }
-
-  // ── 内部：finalize 串行体 ──
-
-  private async doFinalize(finalText?: string): Promise<void> {
-    if (this.isTerminal) return;
-
-    // 若有 finalText，做最后一次 update
-    if (finalText) {
-      const fullText = this.boundaryPrefix !== null ? this.boundaryPrefix + finalText : finalText;
-      if (fullText !== this.lastRawFull) {
-        this.lastRawFull = fullText;
-        await this.ensureSessionWith(fullText);
+    // 正常续写：新文本前缀匹配（含空白归一化）
+    if (prefixMatches(this.lastAcceptedFull, text)) {
+      if (text.length !== this.lastAcceptedFull.length) {
+        await this.sendUpdate(text);
       }
+      return;
     }
 
-    // 终结当前流式会话
+    // 无已下发内容 → 首发
+    if (!this.lastAcceptedFull) {
+      await this.sendUpdate(text);
+      return;
+    }
+
+    // 前缀不匹配 — 长度回退 → 新回复（工具调用后）
+    if (text.length < this.lastAcceptedFull.length) {
+      this.deps.log?.info(`new reply: lastAccepted=${this.lastAcceptedFull.length}→chunk=${text.length}`);
+      await this.completeSession('new_reply');
+      this.lastAcceptedFull = '';
+      await this.sendUpdate(text);
+      return;
+    }
+
+    // 前缀不匹配但长度增长 → 模型重写尾部，同一条流追加
+    const commonLen = longestCommonPrefix(this.lastAcceptedFull, text);
+    const extra = text.slice(Math.max(commonLen, 0));
+    const merged = this.lastAcceptedFull + extra;
+    this.deps.log?.warn(
+      `prefix retry: lastAccepted=${this.lastAcceptedFull.length}→chunk=${text.length} common=${commonLen} extra=${extra.length}, appending`,
+    );
+    await this.sendUpdate(merged);
+  }
+
+  private async handleFinalize(): Promise<void> {
+    if (this.isTerminal) return;
+
+    // 用已下发文本收尾 — 不用框架 deliver 的文本（框架可能追加 ⚠️ 标记）
     if (this.session) {
-      try {
-        await this.session.complete();
-        this.session = null;
-        this.transitionTo('completed', 'finalize:done');
-        this.deps.log?.info(`stream done chunks=${this.sentChunkCount} chars=${this.lastRawFull.length}`);
-        return;
-      } catch (err) {
-        this.deps.log?.error(`finalize complete failed: ${err instanceof Error ? err.message : String(err)}`);
-        this.transitionTo('aborted', 'finalize:complete_error');
-        return;
-      }
+      await this.completeSession();
+      this.transition('done', 'finalize');
+      this.deps.log?.info(`stream done chunks=${this.sentChunkCount} chars=${this.lastAcceptedFull.length}`);
+      return;
     }
 
-    // 没有活跃会话 — 视有无已发内容决定终态
+    // 无会话 — 视有无下发决定终态
     if (this.sentChunkCount > 0) {
-      this.transitionTo('completed', 'finalize:no_session_but_sent');
+      this.transition('done', 'finalize:no_session');
     } else {
-      this.deps.log?.info('no chunks sent, falling back to static');
-      this.transitionTo('aborted', 'finalize:fallback_to_static');
+      this.transition('failed', 'finalize:fallback');
     }
   }
 
-  // ── 内部：StreamSession 管理 ──
+  // ── QQ 交互 ──
 
-  /**
-   * 确保 StreamSession 已打开，并把 text 推给它（SDK 内部节流）。
-   * SDK 使用 replace 语义 — 每次传入的是**当前会话内的完整文本**。
-   */
-  private async ensureSessionWith(text: string): Promise<void> {
+  private async sendUpdate(text: string): Promise<void> {
     if (!this.session) {
       this.session = this.deps.gateway.openStream(this.deps.target, this.deps.replyToId);
-      this.transitionTo('streaming', 'first_chunk');
-      this.deps.log?.info(`first chunk len=${text.length}`);
+      this.transition('streaming', 'first_chunk');
+      this.deps.log?.info(`stream opened (firstChunk=${text.length})`);
     }
     try {
       await this.session.update(text);
-      this.sentChunkCount += 1;
+      this.lastAcceptedFull = text;
+      this.sentChunkCount++;
     } catch (err) {
-      this.deps.log?.error(`stream update failed: ${err instanceof Error ? err.message : String(err)}`);
-      throw err;
+      this.deps.log?.error(`update failed (len=${text.length}): ${err instanceof Error ? err.message : String(err)}`);
+      this.session = null;
+      this.transition('failed', 'update_error');
     }
   }
 
-  // ── 内部：状态机 ──
+  private async completeSession(reason?: string): Promise<void> {
+    if (!this.session) return;
+    this.deps.log?.info(`completing stream (sent=${this.sentChunkCount} chars=${this.lastAcceptedFull.length} reason=${reason ?? 'done'})`);
+    try {
+      await this.session.complete();
+    } catch (err) {
+      this.deps.log?.error(`complete failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.session = null;
+  }
 
-  private transitionTo(next: StreamingPhase, reason: string): void {
+  // ── 状态机 ──
+
+  private transition(next: StreamingPhase, reason: string): void {
     if (this.phase === next) return;
     this.deps.log?.info(`phase: ${this.phase} → ${next} (${reason})`);
     this.phase = next;
   }
-
-
 }
 
-// ── 路由判断 ──
+/** 归一化空白符：连续换行/空格合并为单个空格 */
+function normalizeWs(s: string): string {
+  return s.replace(/\s+/g, ' ');
+}
+
+/** 忽略空白前缀比较 */
+function prefixMatches(accepted: string, incoming: string): boolean {
+  if (incoming.startsWith(accepted)) return true;
+  return normalizeWs(incoming).startsWith(normalizeWs(accepted));
+}
+
+function longestCommonPrefix(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+}
+
+// ── 入口判断 ──
 
 import type { ResolvedQQBotAccount } from '../types.js';
 
-/**
- * 判断当前消息是否应使用流式模式：
- *  1. 账户开启 streaming
- *  2. 目标是 C2C（QQ 流式 API 仅支持私聊）
- */
 export function shouldUseStreaming(
   account: ResolvedQQBotAccount,
   targetScope: 'c2c' | 'group' | 'channel',

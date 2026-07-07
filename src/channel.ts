@@ -23,11 +23,11 @@ import {
   resolveToolPolicy,
   resolveGroupConfig,
 } from './config.js';
-import { getQQBotRuntime } from './runtime.js';
+import { getQQBotRuntime, tryGetQQBotRuntime } from './runtime.js';
 import { getAdapters } from './runtime-adapter/resolve.js';
-import { sendText } from './outbound/outbound-service.js';
+import { sendText, getGateway } from './outbound/outbound-service.js';
 import { sendMedia } from './outbound/media-send.js';
-import { createPluginLogger } from './utils/plugin-logger.js';
+import type { PluginLogger } from './utils/plugin-logger.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
 import { startAccountWithCredentialRecovery, logoutAndClearCredentials, stopAccountGracefully } from './gateway/lifecycle.js';
 import { loadCredentialBackup } from './features/credential-backup.js';
@@ -185,23 +185,27 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     shouldSuppressLocalPayloadPrompt: ({ payload }: any) => isApprovalPayload(payload),
     sendText: async ({ to, text, accountId, replyToId, cfg }) => {
       const account = resolveQQBotAccount(cfg, accountId ?? undefined);
+      const outLog = createOutLog(account.accountId);
+      outLog.debug(`sendText to=${to} len=${text.length} replyTo=${replyToId ?? '-'}`);
       const result = await sendText({ to, text, accountId, replyToId, account });
       if (result.error) throw new Error(result.error);
       return { channel: 'qqbot' as const, messageId: result.messageId ?? '' };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, replyToId, cfg }) => {
       const resolvedAccountId = accountId ?? resolveDefaultQQBotAccountId(cfg);
-      const log = getQQBotRuntime()?.log;
+      const outLog = createOutLog(resolvedAccountId);
+      outLog.debug(`sendMedia to=${to} url=${mediaUrl?.slice(0, 80)} len=${text?.length ?? 0} replyTo=${replyToId ?? '-'}`);
       const result = await sendMedia({
         to,
         source: mediaUrl ?? '',
         text,
         replyToId,
         accountId: resolvedAccountId,
-        log: log ? createPluginLogger({ output: log }) : undefined,
+        log: outLog,
+        agentId: resolveMCPAgentId(to, resolvedAccountId, cfg, outLog),
       });
       if (result.error) {
-        log?.error(`[qqbot:outbound.sendMedia] failed: ${result.error}`);
+        outLog.error(`sendMedia failed: ${result.error}`);
         throw new Error(result.error);
       }
       return { channel: 'qqbot' as const, messageId: result.messageId ?? '' };
@@ -257,6 +261,28 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   // ── 审批（stub — 实际由 features/approval-handler 处理）──
   ...approvalStubs,
 };
+
+function resolveMCPAgentId(to: string, accountId: string, cfg: unknown, log?: PluginLogger): string | undefined {
+  try {
+    const parts = to.split(':');
+    const scope = parts[1];
+    const peerId = parts[2];
+    if (!scope || !peerId) return undefined;
+    const rt = tryGetQQBotRuntime();
+    if (!rt) return undefined;
+    const route = getAdapters(rt).resolveAgentRoute?.({
+      cfg, channel: 'qqbot', accountId,
+      peer: { kind: scope === 'group' ? 'group' : 'direct', id: peerId },
+    });
+    log?.debug(`resolveMCPAgentId to=${to} => agentId=${route?.agentId ?? 'none'}`);
+    return route?.agentId;
+  } catch { return undefined; }
+}
+
+function createOutLog(accountId: string): PluginLogger {
+  const gwLog = getGateway(accountId)?.log;
+  return gwLog?.child('outbound') ?? ({} as PluginLogger);
+}
 
 // Re-export for backward compatibility
 export { stripMentionText } from './utils/mention.js';

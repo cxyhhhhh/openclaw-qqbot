@@ -78,13 +78,12 @@ declare module "openclaw/plugin-sdk" {
   export interface PluginRuntime {
     /** OpenClaw 框架版本号，如 "2026.3.31" */
     version: string;
-    /** 获取当前配置 */
-    getConfig(): OpenClawConfig;
-    /** 更新配置 */
-    setConfig(config: OpenClawConfig): void;
-    /** 获取数据目录路径 */
-    getDataDir(): string;
-    /** Channel 接口 - 使用 any 类型以兼容 SDK 内部复杂类型 */
+    /** 配置访问（运行时 config 在 config.current()，非顶层 getConfig()） */
+    config?: {
+      /** 获取当前运行时配置快照（只读） */
+      current(): OpenClawConfig;
+    };
+    /** Channel 接口 */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     channel?: any;
     /** 日志函数（旧版，建议使用 logging.getChildLogger） */
@@ -102,7 +101,7 @@ declare module "openclaw/plugin-sdk" {
         opts?: { level?: string },
       ) => RuntimeLogger;
     };
-    /** 其他运行时方法 */
+    /** 其他运行时方法（不要假设 getConfig/getDataDir/setConfig 可用） */
     [key: string]: unknown;
   }
 

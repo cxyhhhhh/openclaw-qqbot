@@ -13,8 +13,11 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
+import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from 'openclaw/plugin-sdk/health';
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotGateway } from '../gateway/index.js';
+import { tryGetQQBotRuntime } from '../runtime.js';
+import { getAdapters } from '../runtime-adapter/resolve.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import { getGateway } from './outbound-service.js';
 import { parseTarget } from './target.js';
@@ -45,6 +48,8 @@ export interface SendMediaParams {
   accountId: string;
   /** 日志 */
   log?: PluginLogger;
+  /** Agent ID（用于解析相对路径的工作区） */
+  agentId?: string;
 }
 
 export interface SendMediaResult {
@@ -70,16 +75,19 @@ const ALLOWED_MEDIA_ROOTS = [
  */
 export async function sendMedia(params: SendMediaParams): Promise<SendMediaResult> {
   const { source, accountId, log } = params;
+  const mlog = log?.child('media');
 
   if (!source) {
-    log?.error('[deliver:media] source is empty!');
+    mlog?.error('source is empty');
     return { error: 'sendMedia: source is required' };
   }
 
   // 1. 安全校验 + 路径规范化
-  const resolved = resolveMediaPath(source, log);
+  const wsDir = resolveWorkspaceFromAgent(params.agentId);
+  mlog?.debug(`resolveMediaPath source=${source} agentId=${params.agentId ?? 'none'} workspaceDir=${wsDir ?? 'none'}`);
+  const resolved = resolveMediaPath(source, mlog, wsDir);
   if (!resolved.ok) {
-    log?.error(`[deliver:media] resolveMediaPath failed: ${resolved.error}`);
+    mlog?.error(`resolveMediaPath failed: ${resolved.error}`);
     return { error: resolved.error };
   }
 
@@ -123,11 +131,16 @@ interface ResolveError {
   error: string;
 }
 
-function resolveMediaPath(source: string, log?: SendMediaParams['log']): ResolveResult | ResolveError {
+function resolveMediaPath(source: string, log?: SendMediaParams['log'], workspaceDir?: string): ResolveResult | ResolveError {
   const normalized = normalizePath(source);
 
   // 远程 URL / data URL → 直接通过
   if (!isLocalFilePath(normalized)) {
+    // 纯文件名→工作区兜底查找
+    const resolved = resolveWorkingFile(normalized, workspaceDir);
+    if (resolved) {
+      return { ok: true, path: resolved, isLocal: true };
+    }
     return { ok: true, path: normalized, isLocal: false };
   }
 
@@ -154,12 +167,37 @@ function resolveMediaPath(source: string, log?: SendMediaParams['log']): Resolve
   });
 
   if (!allowed) {
-    log?.warn(`[deliver:media] Path not in allowed directory: ${real}`);
+    log?.warn(`path not in allowed directory: ${real}`);
     // 宽松模式：仍然允许发送，但记录警告
-    // 严格模式可取消下面这行，改为 return { ok: false, error: ... }
   }
 
   return { ok: true, path: real, isLocal: true };
+}
+
+/** Agent ID → workspaceDir（出站时解析，无需透传） */
+function resolveWorkspaceFromAgent(agentId?: string): string | undefined {
+  const cfg = resolveConfigViaAdapter();
+  if (!cfg) return undefined;
+  try {
+    return resolveAgentWorkspaceDir(cfg, agentId ?? resolveDefaultAgentId(cfg));
+  } catch { return undefined; }
+}
+
+/** 通过 adapter 获取配置 */
+function resolveConfigViaAdapter(): Record<string, unknown> | undefined {
+  try {
+    const rt = tryGetQQBotRuntime();
+    if (!rt) return undefined;
+    return getAdapters(rt).getConfig?.();
+  } catch { return undefined; }
+}
+
+/** 纯文件名在 cwd + 工作区兜底查找 */
+function resolveWorkingFile(name: string, workspaceDir?: string): string | null {
+  for (const p of [path.resolve(name), workspaceDir ? path.join(workspaceDir, name) : null]) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
 // ── 各类型 sender ──
@@ -197,7 +235,7 @@ async function sendVoiceMedia(
     return { messageId: result.id };
   } catch (err) {
     // 语音失败 → fallback 到文件发送
-    params.log?.warn(`[deliver:media] sendVoice failed (${formatErr(err)}), falling back to sendFile`);
+    params.log?.child('media')?.warn(`sendVoice failed (${formatErr(err)}), falling back to sendFile`);
     try {
       const fileName = path.basename(source);
       const fallback = await gw.sendFile(target, source, {

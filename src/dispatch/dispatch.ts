@@ -17,10 +17,12 @@ import { buildEnvelope } from './envelope-builder.js';
 import { assembleBody, type AssembledBody } from './body-assembler.js';
 import { sendText, sendMedia, getGateway } from '../outbound/outbound-service.js';
 import { deliverReply, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
+
 import { DeliverDebouncer } from '../outbound/debounce.js';
 import { StreamingController, shouldUseStreaming } from '../outbound/streaming-controller.js';
 import { getAdapters } from '../runtime-adapter/resolve.js';
 import { clearGroupHistory } from '../features/history-store.js';
+
 
 /**
  * 将经过中间件处理的入站消息转发给 OpenClaw AI
@@ -143,6 +145,7 @@ export async function dispatchToOpenClaw(
       ? (audioPath: string) => ttsRuntime.audioFileToSilkBase64(audioPath)
       : undefined,
     log: log?.child('deliver'),
+    agentId: route.agentId ?? 'default',
   };
 
   const streamingEnabled = shouldUseStreaming(
@@ -191,8 +194,9 @@ export async function dispatchToOpenClaw(
               deliver: async (payload: DeliverPayload, info?: DeliverInfo) => {
                 try {
                   const kind = (info as any)?.kind as string | undefined;
+                  dlog?.debug(`deliver kind=${kind ?? 'none'} textLen=${payload.text?.length ?? 0} audioAsVoice=${payload.audioAsVoice ?? false} mediaUrl=${payload.mediaUrl?.slice(0, 60) ?? 'none'} mediaUrls=${payload.mediaUrls?.length ?? 0}`);
                   if (streamingController && !streamingController.shouldFallbackToStatic) {
-                    await streamingController.finalize(payload.text);
+                    await streamingController.finalize();
                     if (!streamingController.shouldFallbackToStatic) {
                       return;
                     }
