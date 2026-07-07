@@ -4,7 +4,7 @@
  * 封装 startAccount / logoutAccount 的业务逻辑：
  * - 凭证恢复
  * - QQBotGateway 实例创建与注册
- * - Features 初始化（image-server、update-checker、approval-handler）
+ * - Features 初始化（update-checker、approval-handler）
  * - 登出时凭证清除
  */
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
@@ -17,7 +17,6 @@ import { createPluginLogger } from '../utils/plugin-logger.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import { registerGateway, unregisterGateway, getGateway } from '../outbound/outbound-service.js';
 import { saveCredentialBackup, loadCredentialBackup } from '../features/credential-backup.js';
-import { startImageServer, isImageServerRunning } from '../features/image-server.js';
 import { triggerUpdateCheck } from '../features/update-checker.js';
 import { QQBotApprovalHandler, registerApprovalHandler, unregisterApprovalHandler, getApprovalHandler } from '../features/approval-handler.js';
 
@@ -101,18 +100,7 @@ export async function startAccountWithCredentialRecovery(ctx: StartAccountContex
  * Gateway ready 后初始化各 feature 模块
  */
 async function initFeatures(account: ResolvedQQBotAccount, cfg: any, log: PluginLogger): Promise<void> {
-  // 1. 图片代理服务器（仅首次启动）
-  if (account.imageServerBaseUrl && !isImageServerRunning()) {
-    const imgLog = log.child('image');
-    try {
-      startImageServer({ baseUrl: account.imageServerBaseUrl });
-      imgLog.info('Image server started');
-    } catch (e) {
-      imgLog.error(`Image server failed: ${e}`);
-    }
-  }
-
-  // 2. 版本更新检测（后台预热，fire-and-forget）
+  // 1. 版本更新检测（后台预热，fire-and-forget）
   triggerUpdateCheck(log);
 
   const existing = getApprovalHandler(account.accountId);

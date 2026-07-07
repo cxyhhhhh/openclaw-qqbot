@@ -41,8 +41,8 @@ function formatSize(bytes: number): string {
 }
 
 /** /bot-clear-storage — 清理下载文件（两步：扫描 → --force 删除） */
-export function botClearStorage(account: ResolvedQQBotAccount): SlashCommand {
-  const targetDir = getQQBotMediaDir('downloads', account.appId);
+export function botClearStorage(_account: ResolvedQQBotAccount): SlashCommand {
+  const targetDir = getQQBotMediaDir('downloads');
   const displayDir = targetDir.replace(os.homedir(), '~');
 
   return {

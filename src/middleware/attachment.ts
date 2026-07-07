@@ -9,17 +9,15 @@
  * 插入位置：envelopeFormatter 之前
  */
 import * as path from 'node:path';
-import * as fs from 'node:fs';
-import * as crypto from 'node:crypto';
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import {
   convertSilkToWav,
   isVoiceAttachment,
 } from '@tencent-connect/qqbot-nodejs/protocol';
+import { saveRemoteMedia } from 'openclaw/plugin-sdk/media-runtime';
 import type { MessageAttachment } from '../types.js';
 import { transcribeAudio, resolveSTTConfig } from '../utils/stt.js';
 import { formatVoiceText, formatDuration, type VoiceTranscript, type TranscriptSource } from '../utils/voice-text.js';
-import { getQQBotDataDir, getQQBotMediaDir } from '../utils/platform.js';
 import { getAdapters } from '../runtime-adapter/resolve.js';
 
 export { formatVoiceText, formatDuration };
@@ -58,10 +56,8 @@ export function attachmentProcessor(opts: AttachmentMiddlewareOptions) {
       const runtime = opts.getRuntime();
       const adapters = getAdapters(runtime);
       const cfg = (adapters.getConfig?.() ?? {}) as Record<string, unknown>;
-      const accountId = (ctx.bot as any).accountId ?? 'default';
       const log = ctx.log;
-      const mediaSaver = adapters.saveRemoteMedia ?? undefined;
-      const result = await processAttachments(attachments, cfg, accountId, log, mediaSaver);
+      const result = await processAttachments(attachments, cfg, log);
 
       if (result.voiceText || result.imageUrls.length > 0 || result.otherInfo || result.localMediaPaths.length > 0) {
         ctx.state.processedAttachments = result;
@@ -79,11 +75,8 @@ type Log = { info: (m: string) => void; error: (m: string) => void; debug?: (m: 
 async function processAttachments(
   attachments: MessageAttachment[],
   cfg: Record<string, unknown>,
-  accountId: string,
   log?: Log,
-  mediaSaver?: ((opts: { url: string; subdir?: string; originalFilename?: string }) => Promise<{ filePath: string } | null>),
 ): Promise<ProcessedAttachments> {
-  const downloadDir = getQQBotMediaDir('downloads');
   const sttCfg = resolveSTTConfig(cfg);
   const audioPolicy = resolveAudioPolicy(cfg);
 
@@ -101,18 +94,18 @@ async function processAttachments(
     const url = normalizeUrl(att.url);
 
     if (isImage && url) {
-      const localPath = await downloadMediaFile(url, downloadDir, att.filename, mediaSaver, log);
+      const localPath = await downloadMediaFile(url, att.filename, log);
       return { type: 'image' as const, localPath, url, contentType: att.content_type ?? 'image/png' };
     }
 
     if (isVoice) {
-      const transcript = await processVoiceAttachment(att, sttCfg, audioPolicy, downloadDir, log);
+      const transcript = await processVoiceAttachment(att, sttCfg, audioPolicy, log);
       return { type: 'voice' as const, transcript };
     }
 
     // other 类型也尝试下载
     if (url) {
-      const localPath = await downloadMediaFile(url, downloadDir, att.filename, mediaSaver, log);
+      const localPath = await downloadMediaFile(url, att.filename, log);
       return { type: 'other' as const, localPath, url, filename: att.filename ?? att.content_type };
     }
     return { type: 'other' as const, localPath: null, url: '', filename: att.filename ?? att.content_type };
@@ -167,7 +160,6 @@ async function processVoiceAttachment(
   att: MessageAttachment,
   sttCfg: ReturnType<typeof resolveSTTConfig>,
   audioPolicy: AudioPolicyResolved,
-  downloadDir: string,
   log?: Log,
 ): Promise<VoiceTranscript> {
   const asrReferText = att.asr_refer_text?.trim() || undefined;
@@ -194,7 +186,7 @@ async function processVoiceAttachment(
   try {
     const wavUrl = normalizeUrl(att.voice_wav_url);
     if (wavUrl) {
-      const downloaded = await downloadMediaFile(wavUrl, downloadDir, undefined, undefined, log);
+      const downloaded = await downloadMediaFile(wavUrl, undefined, log);
       if (downloaded) {
         localPath = downloaded;
         log?.debug?.(`Voice: downloaded WAV from voice_wav_url`);
@@ -204,7 +196,7 @@ async function processVoiceAttachment(
     if (!localPath) {
       const silkUrl = normalizeUrl(att.url);
       if (silkUrl) {
-        const silkPath = await downloadMediaFile(silkUrl, downloadDir, att.filename, undefined, log);
+        const silkPath = await downloadMediaFile(silkUrl, att.filename, log);
         if (silkPath) {
           const ext = path.extname(silkPath).toLowerCase();
           if (audioPolicy.sttDirectFormats.includes(ext)) {
@@ -294,18 +286,9 @@ function normalizeUrl(url: string | undefined): string {
   return url.startsWith('//') ? `https:${url}` : url;
 }
 
-function ensureDir(dir: string): string {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
-}
-
 async function downloadMediaFile(
   url: string,
-  dir: string,
   filename?: string,
-  mediaSaver?: (opts: { url: string; subdir?: string; originalFilename?: string }) => Promise<{ filePath: string } | null>,
   log?: Log,
 ): Promise<string | null> {
   // 仅允许 HTTPS（安全策略）
@@ -314,51 +297,18 @@ async function downloadMediaFile(
     return null;
   }
 
-  // 优先使用框架 saveRemoteMedia（自带 SSRF 防护、重试、大小限制）
-  if (mediaSaver) {
-    try {
-      const result = await mediaSaver({ url, subdir: 'qqbot-inbound', originalFilename: filename });
-      if (result?.filePath) {
-        log?.debug?.(`Downloaded via runtime: ${result.filePath}`);
-        return result.filePath;
-      }
-    } catch (err) {
-      log?.error(`runtime.media.saveRemoteMedia failed: ${err instanceof Error ? err.message : String(err)}`);
-      // fallback 到直接 fetch
-    }
-  }
-
-  // Fallback：直接 fetch（runtime 不可用时）
   try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    if (!resp.ok) {
-      log?.debug?.(`Download HTTP ${resp.status}: ${url.slice(0, 80)}`);
-      return null;
-    }
-    const buffer = Buffer.from(await resp.arrayBuffer());
-
-    // 命名格式: {base}_{timestamp}_{randomHex}{ext}
-    const ext = filename ? path.extname(filename) : guessExtFromUrl(url);
-    const base = filename ? path.basename(filename, path.extname(filename)) : 'download';
-    const ts = Date.now();
-    const rand = crypto.randomBytes(3).toString('hex');
-    const safeFilename = `${base || 'file'}_${ts}_${rand}${ext || '.bin'}`;
-    const filePath = path.join(dir, safeFilename);
-    fs.writeFileSync(filePath, buffer);
-    log?.debug?.(`Downloaded: ${filePath}`);
-    return filePath;
+    const result = await saveRemoteMedia({
+      url,
+      subdir: 'qqbot/downloads',
+      originalFilename: filename,
+      maxBytes: 500 * 1024 * 1024,
+      timeoutMs: 60_000,
+    });
+    log?.debug?.(`Downloaded: ${result.path}`);
+    return result.path;
   } catch (err) {
     log?.error(`Download failed: ${url.slice(0, 80)} — ${err instanceof Error ? err.message : String(err)}`);
     return null;
-  }
-}
-
-
-
-function guessExtFromUrl(url: string): string {
-  try {
-    return path.extname(new URL(url).pathname) || '.bin';
-  } catch {
-    return '.bin';
   }
 }

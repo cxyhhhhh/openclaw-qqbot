@@ -2,7 +2,7 @@ import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { getQQBotDataDir } from '../utils/platform.js';
+import { getQQBotMediaDir } from '../utils/platform.js';
 import { checkCommandAuth } from './config-util.js';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import { getAdapters } from '../runtime-adapter/resolve.js';
@@ -218,7 +218,7 @@ export function botLogs(runtime: PluginRuntime): SlashCommand {
         return '⚠️ 找到日志文件但读取失败';
       }
 
-      const tmpDir = getQQBotDataDir('downloads');
+      const tmpDir = getQQBotMediaDir('exports');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const tmpFile = path.join(tmpDir, `bot-logs-${timestamp}.txt`);

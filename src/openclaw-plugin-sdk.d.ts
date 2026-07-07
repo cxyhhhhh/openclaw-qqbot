@@ -234,7 +234,6 @@ declare module "openclaw/plugin-sdk" {
     tokenFile?: string;
     useEnv?: boolean;
     name?: string;
-    imageServerBaseUrl?: string;
     [key: string]: unknown;
   }
 

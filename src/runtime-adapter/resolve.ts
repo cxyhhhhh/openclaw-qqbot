@@ -33,7 +33,7 @@ export interface RuntimeAdapters {
   /** Markdown 文本分块 */
   chunkMarkdownText: ((text: string, limit: number) => string[]) | null;
   /** 远程媒体保存（图片/语音下载） */
-  saveRemoteMedia: ((opts: { url: string; subdir?: string; originalFilename?: string }) => Promise<{ filePath: string } | null>) | null;
+  saveRemoteMedia: ((opts: { url: string; subdir?: string; originalFilename?: string }) => Promise<{ path: string } | null>) | null;
   /** 获取当前配置快照 */
   getConfig: (() => any) | null;
   /**
