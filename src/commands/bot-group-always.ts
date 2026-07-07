@@ -1,9 +1,10 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
+import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { updateAccountConfig, checkCommandAuth } from './config-util.js';
 
 /** /bot-group-always — 修改群消息默认响应模式 */
-export function botGroupAlways(account: ResolvedQQBotAccount, getRuntime: () => any): SlashCommand {
+export function botGroupAlways(account: ResolvedQQBotAccount, getRuntime: () => PluginRuntime): SlashCommand {
   return {
     name: ['bot-group-always', 'bot-group-allways'],
     description: '修改群消息默认响应模式',

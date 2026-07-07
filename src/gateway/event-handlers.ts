@@ -172,7 +172,6 @@ async function handleApproval(
 }
 
 const CHANNEL_VER = getPackageVersion();
-const CLAW_VER = getOpenClawVersion();
 
 function buildClawCfg(
   requireMention: boolean,
@@ -183,7 +182,7 @@ function buildClawCfg(
     channel_type: 'qqbot',
     channel_ver: CHANNEL_VER,
     claw_type: 'openclaw',
-    claw_ver: CLAW_VER,
+    claw_ver: getOpenClawVersion(),
     require_mention: requireMention ? 'mention' : 'always',
     group_policy: groupPolicy,
     mention_patterns: mentionPatterns.join(','),

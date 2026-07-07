@@ -5,6 +5,7 @@
  * 每个命令拆分为独立文件，此处仅编排。
  */
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
+import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { botHelp } from './bot-help.js';
 import { botPing } from './bot-ping.js';
@@ -19,7 +20,7 @@ import { botGroupAlways } from './bot-group-always.js';
 import { botPairing } from './bot-pairing.js';
 
 export interface CommandBuildOptions {
-  getRuntime: () => any;
+  getRuntime: () => PluginRuntime;
 }
 
 /**
@@ -36,7 +37,7 @@ export function buildCommandList(account: ResolvedQQBotAccount, opts: CommandBui
     botVersion(account),
     botMe(),
     botUpgrade(account),
-    botLogs(),
+    botLogs(opts.getRuntime()),
     botStreaming(account, opts.getRuntime),
     botClearStorage(account),
     botApprove(opts.getRuntime),

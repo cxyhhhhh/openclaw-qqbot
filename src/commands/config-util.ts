@@ -1,5 +1,6 @@
 import type { ResolvedQQBotAccount } from '../types.js';
 import type { SlashCommandHandlerContext } from '@tencent-connect/qqbot-nodejs';
+import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import { getAdapters } from '../runtime-adapter/resolve.js';
 
 /**
@@ -27,7 +28,7 @@ interface PersistResult {
  * 底层：获取 persistConfig，统一处理 runtime/adapters 判空。
  * @returns [error, result] — error 非空时不可用；result.persist 直接调 persistConfig。
  */
-async function resolvePersistFn(getRuntime: () => any): Promise<[string | null, PersistResult | null]> {
+async function resolvePersistFn(getRuntime: () => PluginRuntime): Promise<[string | null, PersistResult | null]> {
   const runtime = getRuntime();
   if (!runtime) return ['⚠️ runtime 不可用，无法修改配置。', null];
 
@@ -47,7 +48,7 @@ async function resolvePersistFn(getRuntime: () => any): Promise<[string | null, 
  */
 export async function updateAccountConfig(
   account: ResolvedQQBotAccount,
-  getRuntime: () => any,
+  getRuntime: () => PluginRuntime,
   updater: (accountConfig: Record<string, unknown>) => void,
 ): Promise<string | null> {
   const [err, result] = await resolvePersistFn(getRuntime);
@@ -80,7 +81,7 @@ export async function updateAccountConfig(
  * 适用于 tools.exec 等非账户级字段。
  */
 export async function updateGlobalConfig(
-  getRuntime: () => any,
+  getRuntime: () => PluginRuntime,
   updater: (cfg: any) => void,
 ): Promise<string | null> {
   const [err, result] = await resolvePersistFn(getRuntime);

@@ -1,4 +1,5 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
+import type { PluginRuntime } from 'openclaw/plugin-sdk';
 import { getAdapters } from '../runtime-adapter/resolve.js';
 import { updateGlobalConfig, checkCommandAuth } from './config-util.js';
 
@@ -44,7 +45,7 @@ function menuText(): string {
 }
 
 /** /bot-approve — 管理命令执行审批配置 */
-export function botApprove(getRuntime: () => any): SlashCommand {
+export function botApprove(getRuntime: () => PluginRuntime): SlashCommand {
   return {
     name: 'bot-approve',
     description: '管理命令执行审批配置',
