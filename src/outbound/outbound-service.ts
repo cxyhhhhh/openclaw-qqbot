@@ -245,7 +245,6 @@ export class OutboundService {
 }
 
 // ── 内部工具 ──
-
 function formatError(err: unknown): SendResult {
   if (err instanceof Error) {
     const result: SendResult = { error: err.message };

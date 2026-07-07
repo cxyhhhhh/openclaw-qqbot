@@ -16,6 +16,7 @@ import { dispatchToOpenClaw } from '../dispatch/index.js';
 import { runWithRequestContext } from '../request-context.js';
 import { getApprovalHandler } from '../features/approval-handler.js';
 import { recordKnownUser } from '../features/proactive.js';
+import { cacheMsgId } from '../features/msgid-cache.js';
 
 export async function handleMessage(
   ctx: MiddlewareContext,
@@ -38,6 +39,9 @@ export async function handleMessage(
   }
 
   try {
+    // 缓存 msgId 供被动回复使用
+    cacheMsgId(scope, msg.replyTarget.targetId, msg.messageId);
+
     recordKnownUser({
       type: scope === 'group' ? 'group' : 'c2c',
       openid: scope === 'group' ? msg.replyTarget.targetId : msg.senderId,

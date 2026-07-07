@@ -24,6 +24,7 @@ import { getQQBotDataDir } from '../utils/platform.js';
 import { buildUserAgent } from '../bot-instance.js';
 import { createPluginWebhookAdapter } from '../runtime-adapter/webhook-adapter.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
+import { getCachedMsgId } from '../features/msgid-cache.js';
 
 export interface GatewayCallbacks {
   onReady?: () => void;
@@ -261,7 +262,10 @@ export class QQBotGateway {
 }
 
 function attachMsgId(target: ReplyTarget, opts?: SendOptions): ReplyTarget {
-  return opts?.msgId ? { ...target, msgId: opts.msgId } : target;
+  if (opts?.msgId) return { ...target, msgId: opts.msgId };
+  // 无显式 msgId 时尝试从缓存获取
+  const cached = getCachedMsgId(target.scope, target.targetId);
+  return cached ? { ...target, msgId: cached } : target;
 }
 
 function resolveMediaSource(source: string): { url?: string; localPath?: string; fileData?: string } {
