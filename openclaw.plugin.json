@@ -15,7 +15,10 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
-    "properties": {}
+    "properties": {
+      "appId": { "type": "string", "description": "QQ Bot AppID" },
+      "clientSecret": { "type": "string", "description": "QQ Bot AppSecret" },
+    }
   },
   "channelConfigs": {
     "qqbot": {

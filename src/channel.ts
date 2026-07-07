@@ -28,6 +28,7 @@ import { getAdapters } from './runtime-adapter/resolve.js';
 import { sendText, getGateway } from './outbound/outbound-service.js';
 import { sendMedia } from './outbound/media-send.js';
 import type { PluginLogger } from './utils/plugin-logger.js';
+import { qqbotSetupWizard } from './setup/surface.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
 import { startAccountWithCredentialRecovery, logoutAndClearCredentials, stopAccountGracefully } from './gateway/lifecycle.js';
 import { loadCredentialBackup } from './features/credential-backup.js';
@@ -147,6 +148,8 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       }) as OpenClawConfig;
     },
   },
+
+  setupWizard: qqbotSetupWizard,
 
   // ── Messaging ──
   messaging: {
