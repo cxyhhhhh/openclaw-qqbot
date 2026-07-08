@@ -675,6 +675,47 @@ declare module "openclaw/plugin-sdk" {
   export function normalizeAccountId(accountId: string | undefined | null): string;
 }
 
+declare module "openclaw/plugin-sdk/setup" {
+  export interface ChannelSetupWizardStatus {
+    channelLabel: string;
+    configuredLabel: string;
+    unconfiguredLabel: string;
+    configuredHint?: string;
+    unconfiguredHint?: string;
+    configuredScore?: number;
+    unconfiguredScore?: number;
+    includeStatusLine?: boolean;
+    resolveConfigured: (params: { cfg: unknown; accountId: string }) => boolean;
+  }
+
+  export interface ChannelSetupWizard {
+    channel: string;
+    status: ChannelSetupWizardStatus;
+    credentials?: Array<{ id: string; label: string }>;
+    onStatusChange?: (params: { cfg: unknown }) => void | Promise<void>;
+    configure?: (params: { cfg: unknown; accountId: string; prompter: unknown; runtime: unknown }) => Promise<unknown>;
+    finalize: (params: { cfg: unknown; accountId: string; prompter: unknown; runtime: unknown }) => Promise<unknown>;
+    enable?: (cfg: unknown) => unknown;
+    disable?: (cfg: unknown) => unknown;
+  }
+
+  export function createStandardChannelSetupStatus(
+    opts: ChannelSetupWizardStatus,
+  ): ChannelSetupWizardStatus;
+
+  export function setSetupChannelEnabled(
+    cfg: unknown,
+    channel: string,
+    enabled: boolean,
+  ): void;
+
+  export const DEFAULT_ACCOUNT_ID: string;
+}
+
+declare module "openclaw/plugin-sdk/setup-tools" {
+  export function formatDocsLink(href: string, text?: string): string;
+}
+
 declare module "openclaw/plugin-sdk/approval-runtime" {
   export interface ExecApprovalReplyMetadata {
     approvalId: string;

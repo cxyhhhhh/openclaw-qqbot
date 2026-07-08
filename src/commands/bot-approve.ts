@@ -1,6 +1,6 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../adapter/resolve.js';
 import { updateGlobalConfig, checkCommandAuth } from './config-util.js';
 
 /** 审批预设配置 */

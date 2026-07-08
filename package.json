@@ -41,7 +41,7 @@
     "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts"
   },
   "dependencies": {
-    "@tencent-connect/qqbot-nodejs": "npm:@tencent/qqbot-nodejs@0.0.0-dev.8a6be470",
+    "@tencent-connect/qqbot-nodejs": "npm:@cxyhhhhh/qqbot-nodejs@1.0.2-dev.202607081646",
     "@tencent-connect/qqbot-connector": "1.2.0"
   },
   "devDependencies": {

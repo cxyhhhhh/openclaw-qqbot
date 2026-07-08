@@ -5,7 +5,7 @@
  * 模式：disabled | open | allowlist | pairing（仅 c2c）
  */
 import type { Middleware } from '@tencent-connect/qqbot-nodejs';
-import { getPairingApi } from '../runtime-adapter/pairing-runtime.js';
+import { getPairingApi } from '../adapter/pairing.js';
 
 
 /**

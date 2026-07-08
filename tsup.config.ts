@@ -22,7 +22,7 @@ export default defineConfig({
   clean: true,
   external: [
     'openclaw',
-    'openclaw/plugin-sdk',
+    /^openclaw\/plugin-sdk(\/.+)?$/,
   ],
   noExternal: [
     '@tencent-connect/qqbot-nodejs',

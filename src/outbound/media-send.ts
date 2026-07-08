@@ -13,11 +13,11 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from 'openclaw/plugin-sdk/health';
+import { resolveAgentWorkspace } from '../adapter/workspace.js';
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotGateway } from '../gateway/index.js';
 import { tryGetQQBotRuntime } from '../runtime.js';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../adapter/resolve.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import { getGateway } from './outbound-service.js';
 import { parseTarget } from './target.js';
@@ -174,13 +174,11 @@ function resolveMediaPath(source: string, log?: SendMediaParams['log'], workspac
   return { ok: true, path: real, isLocal: true };
 }
 
-/** Agent ID → workspaceDir（出站时解析，无需透传） */
+/** Agent ID → workspaceDir（动态加载 plugin-sdk/health） */
 function resolveWorkspaceFromAgent(agentId?: string): string | undefined {
   const cfg = resolveConfigViaAdapter();
   if (!cfg) return undefined;
-  try {
-    return resolveAgentWorkspaceDir(cfg, agentId ?? resolveDefaultAgentId(cfg));
-  } catch { return undefined; }
+  return resolveAgentWorkspace(cfg, agentId);
 }
 
 /** 通过 adapter 获取配置 */

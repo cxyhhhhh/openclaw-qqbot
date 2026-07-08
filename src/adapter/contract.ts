@@ -17,19 +17,16 @@ interface ApiProbe {
 
 const REQUIRED: ApiProbe[] = [
   {
-    name: 'channel.inbound.run',
-    probe: (rt) => {
-      const c = (rt as any).channel;
-      return typeof c?.inbound?.run === 'function' || typeof c?.turn?.run === 'function';
-    },
-  },
-  {
     name: 'channel.reply.dispatchReplyWithBufferedBlockDispatcher',
     probe: (rt) => typeof (rt as any).channel?.reply?.dispatchReplyWithBufferedBlockDispatcher === 'function',
   },
 ];
 
 const OPTIONAL: ApiProbe[] = [
+  { name: 'channel.inbound.run (degraded)', probe: (rt) => {
+    const c = (rt as any).channel;
+    return typeof c?.inbound?.run === 'function' || typeof c?.turn?.run === 'function';
+  }},
   { name: 'channel.inbound.buildContext', probe: (rt) => typeof (rt as any).channel?.inbound?.buildContext === 'function' },
   { name: 'channel.reply.formatAgentEnvelope', probe: (rt) => typeof (rt as any).channel?.reply?.formatAgentEnvelope === 'function' },
   { name: 'channel.text.chunkMarkdownText', probe: (rt) => typeof (rt as any).channel?.text?.chunkMarkdownText === 'function' },

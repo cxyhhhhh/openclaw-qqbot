@@ -15,7 +15,7 @@ import { runWithRequestContext } from '../request-context.js';
 import { getApprovalHandler } from '../features/approval-handler.js';
 import { recordKnownUser } from '../features/proactive.js';
 import { cacheMsgId } from '../features/msgid-cache.js';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../adapter/resolve.js';
 import { resolveGroupConfigFromAccount, resolveGroupPolicy, resolveMentionPatterns } from '../config.js';
 import { getPackageVersion } from '../utils/pkg-version.js';
 import { getOpenClawVersion } from '../bot-instance.js';

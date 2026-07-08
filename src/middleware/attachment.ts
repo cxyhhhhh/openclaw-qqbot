@@ -14,11 +14,11 @@ import {
   convertSilkToWav,
   isVoiceAttachment,
 } from '@tencent-connect/qqbot-nodejs/protocol';
-import { saveRemoteMedia } from 'openclaw/plugin-sdk/media-runtime';
 import type { MessageAttachment } from '../types.js';
 import { transcribeAudio, resolveSTTConfig } from '../utils/stt.js';
 import { formatVoiceText, formatDuration, type VoiceTranscript, type TranscriptSource } from '../utils/voice-text.js';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { downloadRemoteMedia } from '../adapter/media.js';
+import { getAdapters } from '../adapter/resolve.js';
 
 export { formatVoiceText, formatDuration };
 export type { VoiceTranscript, TranscriptSource };
@@ -298,12 +298,12 @@ async function downloadMediaFile(
   }
 
   try {
-    const result = await saveRemoteMedia({
+    const result = await downloadRemoteMedia({
       url,
       subdir: 'qqbot/downloads',
       originalFilename: filename,
       maxBytes: 500 * 1024 * 1024,
-      timeoutMs: 60_000,
+      timeoutMs: 120_000,
     });
     log?.debug?.(`Downloaded: ${result.path}`);
     return result.path;

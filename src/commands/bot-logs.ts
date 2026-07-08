@@ -5,7 +5,7 @@ import os from 'node:os';
 import { getQQBotMediaDir } from '../utils/platform.js';
 import { checkCommandAuth } from './config-util.js';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../adapter/resolve.js';
 
 
 const MAX_LINES_PER_FILE = 1000;

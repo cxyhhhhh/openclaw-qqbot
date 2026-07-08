@@ -17,9 +17,8 @@ export interface ApprovalGatewayClient {
 export function loadApprovalGatewayRuntime(): {
   createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<ApprovalGatewayClient>;
 } | null {
-  const currentFile = __filename;
-  const req = createRequire(currentFile);
-  const pluginRoot = path.resolve(path.dirname(currentFile), '..', '..');
+  const req = createRequire(__filename);
+  const pluginRoot = path.resolve(path.dirname(__filename), '..', '..');
   const fs = req('node:fs') as typeof import('node:fs');
 
   const tryLoadFromRoot = (root: string) => {

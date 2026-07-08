@@ -1,7 +1,7 @@
 import type { ResolvedQQBotAccount } from '../types.js';
 import type { SlashCommandHandlerContext } from '@tencent-connect/qqbot-nodejs';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../adapter/resolve.js';
 
 /**
  * 命令授权检查（用于 SlashCommand.authorized 回调）。

@@ -24,7 +24,7 @@ import {
   resolveGroupConfig,
 } from './config.js';
 import { getQQBotRuntime, tryGetQQBotRuntime } from './runtime.js';
-import { getAdapters } from './runtime-adapter/resolve.js';
+import { getAdapters } from './adapter/resolve.js';
 import { sendText, getGateway } from './outbound/outbound-service.js';
 import { sendMedia } from './outbound/media-send.js';
 import type { PluginLogger } from './utils/plugin-logger.js';

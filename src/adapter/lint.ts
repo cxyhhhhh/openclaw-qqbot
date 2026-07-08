@@ -1,8 +1,8 @@
 /**
- * Lint: 检测 runtime-adapter/ 外部直接访问 runtime.channel.* 的代码
+ * Lint: 检测 adapter/ 外部直接访问 runtime.channel.* 的代码
  *
  * 运行方式：
- *   npx tsx src/runtime-adapter/lint-runtime-access.ts
+ *   npx tsx src/adapter/lint-runtime-access.ts
  *
  * 退出码：
  *   0 = 无违规
@@ -21,7 +21,7 @@ import * as path from 'node:path';
 // ── 配置 ──
 
 const SRC_ROOT = path.resolve(import.meta.dirname, '..');
-const ADAPTER_DIR = path.resolve(SRC_ROOT, 'runtime-adapter');
+const ADAPTER_DIR = path.resolve(SRC_ROOT, 'adapter');
 
 /** 匹配直接使用 runtime.channel / runtime.config / (runtime as any) 的模式 */
 const VIOLATION_PATTERNS: RegExp[] = [
@@ -36,7 +36,7 @@ const VIOLATION_PATTERNS: RegExp[] = [
 const BYPASS_MARKER = '@adapter-bypass';
 
 /** 排除的目录/文件 */
-const EXCLUDE_DIRS = ['runtime-adapter', 'node_modules', 'dist', 'tests'];
+const EXCLUDE_DIRS = ['adapter', 'node_modules', 'dist', 'tests'];
 const EXCLUDE_FILES = ['types.ts', 'types-augment.d.ts', 'openclaw-plugin-sdk.d.ts'];
 
 // ── 扫描逻辑 ──
@@ -50,7 +50,7 @@ interface Violation {
 
 function shouldExclude(filePath: string): boolean {
   const relative = path.relative(SRC_ROOT, filePath);
-  // 排除 runtime-adapter 自身
+  // 排除 adapter 自身
   if (filePath.startsWith(ADAPTER_DIR)) return true;
   // 排除配置的目录
   for (const dir of EXCLUDE_DIRS) {
@@ -123,7 +123,7 @@ function main(): void {
   }
 
   if (allViolations.length === 0) {
-    console.log('✅ No direct runtime access found outside runtime-adapter/');
+    console.log('✅ No direct runtime access found outside adapter/');
     process.exit(0);
   }
 
@@ -132,7 +132,7 @@ function main(): void {
     console.error(`  ${v.file}:${v.line}`);
     console.error(`    ${v.content}`);
     console.error(`    → matched: ${v.pattern}`);
-    console.error(`    → fix: use runtime-adapter or add "// @adapter-bypass: <reason>"\n`);
+    console.error(`    → fix: use adapter or add "// @adapter-bypass: <reason>"\n`);
   }
   console.error(
     `\nTo bypass a specific line, add an inline comment:\n` +

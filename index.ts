@@ -14,7 +14,7 @@ import { qqbotPlugin } from './src/channel.js';
 import { setQQBotRuntime } from './src/runtime.js';
 import { registerChannelTool } from './src/tools/channel.js';
 import { registerRemindTool } from './src/tools/remind.js';
-import { verifyRuntimeContract } from './src/runtime-adapter/contract-check.js';
+import { verifyRuntimeContract } from './src/adapter/contract.js';
 
 let registered = false;
 

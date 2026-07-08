@@ -22,7 +22,7 @@ import { setupMiddlewares } from './middleware-setup.js';
 import { handleMessage, handleInteraction } from './event-handlers.js';
 import { getQQBotDataDir } from '../utils/platform.js';
 import { buildUserAgent } from '../bot-instance.js';
-import { createPluginWebhookAdapter } from '../runtime-adapter/webhook-adapter.js';
+import { createPluginWebhookAdapter } from '../adapter/webhook.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 import { getCachedMsgId } from '../features/msgid-cache.js';
 

@@ -14,7 +14,7 @@ import { getBotForAccount } from "../bot-instance.js";
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import type { InlineKeyboard, KeyboardButton } from "../types.js";
 
-import { loadApprovalGatewayRuntime, type ApprovalGatewayClient } from '../runtime-adapter/gateway-runtime.js';
+import { loadApprovalGatewayRuntime, type ApprovalGatewayClient } from '../adapter/gateway.js';
 type EventFrame = {
   event: string;
   payload: unknown;

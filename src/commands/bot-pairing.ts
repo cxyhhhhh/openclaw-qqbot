@@ -1,6 +1,6 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { PluginRuntime } from 'openclaw/plugin-sdk';
-import { getPairingApi } from '../runtime-adapter/pairing-runtime.js';
+import { getPairingApi } from '../adapter/pairing.js';
 import { checkCommandAuth } from './config-util.js';
 
 /** /bot-pairing — DM 配对审批管理 */

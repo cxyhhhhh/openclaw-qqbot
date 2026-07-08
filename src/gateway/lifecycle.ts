@@ -11,7 +11,7 @@ import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { DEFAULT_ACCOUNT_ID, resolveQQBotAccount, applyQQBotAccountConfig } from '../config.js';
 import { getQQBotRuntime } from '../runtime.js';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../adapter/resolve.js';
 import { QQBotGateway } from './qqbot-gateway.js';
 import { createPluginLogger } from '../utils/plugin-logger.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';

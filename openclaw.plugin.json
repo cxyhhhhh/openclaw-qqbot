@@ -17,7 +17,7 @@
     "additionalProperties": true,
     "properties": {
       "appId": { "type": "string", "description": "QQ Bot AppID" },
-      "clientSecret": { "type": "string", "description": "QQ Bot AppSecret" },
+      "clientSecret": { "type": "string", "description": "QQ Bot AppSecret" }
     }
   },
   "channelConfigs": {

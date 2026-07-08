@@ -21,7 +21,7 @@ import { deliverReply, type DeliverPayload, type DeliverInfo, type DeliverContex
 
 import { DeliverDebouncer } from '../outbound/debounce.js';
 import { StreamingController, shouldUseStreaming } from '../outbound/streaming-controller.js';
-import { getAdapters } from '../runtime-adapter/resolve.js';
+import { getAdapters } from '../adapter/resolve.js';
 import { clearGroupHistory } from '../features/history-store.js';
 
 
@@ -40,11 +40,6 @@ export async function dispatchToOpenClaw(
   const envelope = buildEnvelope(ctx, msg, account);
 
   dlog?.debug(`received sender=${envelope.senderId} scope=${envelope.chatScope} msgId=${envelope.messageId}`);
-
-  if (!adapters.inboundRun) {
-    dlog?.error(`runtime adapter inboundRun not available (openclaw=${adapters.version})`);
-    return;
-  }
 
   if (!adapters.dispatchReply) {
     dlog?.error(`runtime adapter dispatchReply not available (openclaw=${adapters.version})`);
@@ -162,46 +157,68 @@ export async function dispatchToOpenClaw(
     dlog?.debug(`streaming enabled for ${envelope.senderId}`);
   }
 
-  await adapters.inboundRun({
-    channel: 'qqbot',
-    accountId: route.accountId,
-    raw: envelope,
-    adapter: {
-      ingest: (raw: any) => ({
-        id: envelope.messageId,
-        rawText: assembled.rawBody,
-        textForAgent: assembled.agentBody,
-        textForCommands: assembled.rawBody,
-        raw,
-      }),
-      resolveTurn: (_input: unknown, _eventClass: unknown, _preflight: unknown) => ({
-        channel: 'qqbot',
-        accountId: route.accountId,
-        routeSessionKey: route.sessionKey,
-        storePath,
-        ctxPayload,
-        recordInboundSession: adapters.recordInboundSession,
-        record: {
-          onRecordError: (err: unknown) => {
-            dlog?.error(`Session record error: ${err}`);
-          },
+  if (!adapters.inboundRun) {
+    // 低版本：手动 session + dispatchReply 直调
+    if (adapters.recordInboundSession) {
+      try {
+        await adapters.recordInboundSession({
+          storePath,
+          sessionKey: route.sessionKey,
+          ctx: ctxPayload,
+        });
+      } catch { /* best-effort */ }
+    }
+    await adapters.dispatchReply!({
+      ctx: ctxPayload,
+      cfg,
+      dispatcherOptions: {
+        deliver: async (payload: DeliverPayload, info?: DeliverInfo) => {
+          await deliverReply(payload, info, deliverCtx);
         },
-        runDispatch: () => {
-          let blockDelivered = false;
-          const deliveredMediaUrls = new Set<string>();
-          return adapters.dispatchReply!({
-            ctx: ctxPayload,
-            cfg,
-            dispatcherOptions: {
-              deliver: async (payload: DeliverPayload, info?: DeliverInfo) => {
-                try {
-                  const kind = (info as any)?.kind as string | undefined;
-                  dlog?.debug(`deliver kind=${kind ?? 'none'} textLen=${payload.text?.length ?? 0} audioAsVoice=${payload.audioAsVoice ?? false} mediaUrl=${payload.mediaUrl?.slice(0, 60) ?? 'none'} mediaUrls=${payload.mediaUrls?.length ?? 0}`);
+      },
+    });
+    if (debouncer) await debouncer.flushAll();
+  } else {
+    await adapters.inboundRun!({
+      channel: 'qqbot',
+      accountId: route.accountId,
+      raw: envelope,
+      adapter: {
+        ingest: (raw: any) => ({
+          id: envelope.messageId,
+          rawText: assembled.rawBody,
+          textForAgent: assembled.agentBody,
+          textForCommands: assembled.rawBody,
+          raw,
+        }),
+        resolveTurn: (_input: unknown, _eventClass: unknown, _preflight: unknown) => ({
+          channel: 'qqbot',
+          accountId: route.accountId,
+          routeSessionKey: route.sessionKey,
+          storePath,
+          ctxPayload,
+          recordInboundSession: adapters.recordInboundSession,
+          record: {
+            onRecordError: (err: unknown) => {
+              dlog?.error(`Session record error: ${err}`);
+            },
+          },
+          runDispatch: () => {
+            let blockDelivered = false;
+            const deliveredMediaUrls = new Set<string>();
+            return adapters.dispatchReply!({
+              ctx: ctxPayload,
+              cfg,
+              dispatcherOptions: {
+                deliver: async (payload: DeliverPayload, info?: DeliverInfo) => {
+                  try {
+                    const kind = (info as any)?.kind as string | undefined;
+                    dlog?.debug(`deliver kind=${kind ?? 'none'} textLen=${payload.text?.length ?? 0} audioAsVoice=${payload.audioAsVoice ?? false} mediaUrl=${payload.mediaUrl?.slice(0, 60) ?? 'none'} mediaUrls=${payload.mediaUrls?.length ?? 0}`);
 
-                  // ── block 带音频/媒体时优先发送（不发送文本，留流式处理） ──
-                  if (kind === 'block') {
-                    if (payload.audioAsVoice) {
-                      // TTS 语音：走完整 deliverReply（voice intent 消费文本）
+                    // ── block 带音频/媒体时优先发送（不发送文本，留流式处理） ──
+                    if (kind === 'block') {
+                      if (payload.audioAsVoice) {
+                        // TTS 语音：走完整 deliverReply（voice intent 消费文本）
                       await deliverReply(payload, info, deliverCtx);
                     } else {
                       // 普通媒体（图片等）：只发媒体，文本留给流式
@@ -296,7 +313,8 @@ export async function dispatchToOpenClaw(
       }),
     },
   });
-
+  }
+ 
   dlog?.debug(`inboundRun completed sessionKey=${route.sessionKey}`);
 
   // 群消息回复后清空历史缓存（避免下次 @ 时重复组包）
