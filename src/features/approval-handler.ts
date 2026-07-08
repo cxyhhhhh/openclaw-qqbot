@@ -244,7 +244,7 @@ export class QQBotApprovalHandler {
     this.requestCache.clear();
     await this.gatewayClient?.stop();
     this.gatewayClient = null;
-    this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: stopped`);
+    this.opts.log?.debug(`[qqbot:${this.opts.accountId}] approval-handler: stopped`);
   }
 
   /** gateway 是否已建立连接 */
