@@ -15,7 +15,7 @@ const PLUGIN_VERSION = getPackageVersion();
 let _openclawVersion = 'unknown';
 
 export function setOpenClawVersion(version: string): void {
-  _openclawVersion = version;
+  if (version) _openclawVersion = version;
 }
 
 export function getOpenClawVersion(): string {

@@ -7,13 +7,15 @@
 import type { PluginRuntime } from "openclaw/plugin-sdk";
 import { setOpenClawVersion } from "./bot-instance.js";
 import { flushAllRefIndexStores } from "./features/ref-index-store.js";
+import { getOpenclawVersion } from "./utils/pkg-version.js";
 
 let runtime: PluginRuntime | null = null;
 let exitHooksInstalled = false;
 
 export function setQQBotRuntime(next: PluginRuntime) {
   runtime = next;
-  setOpenClawVersion(next.version);
+  const version = getOpenclawVersion(next.version);
+  setOpenClawVersion(version);
   installExitHooksOnce();
 }
 
