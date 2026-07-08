@@ -192,6 +192,8 @@ export function resolveRuntimeAdapters(
     ['config', 'current'],
   ]) ?? probeFunction(rt, [
     ['getConfig'],
+  ]) ?? probeFunction(rt, [
+    ['config', 'loadConfig'],
   ]);
 
   // config 持久化：优先 mutateConfigFile（新版，原子操作），fallback writeConfigFile（旧版）

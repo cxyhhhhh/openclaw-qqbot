@@ -2,6 +2,8 @@ import { defineConfig } from 'tsup';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+const PKG_VERSION = JSON.parse(readFileSync('package.json', 'utf8')).version;
+
 function sanitizeDist() {
   const exitFile = join('dist', 'index.cjs');
   let src = readFileSync(exitFile, 'utf8');
@@ -20,6 +22,9 @@ export default defineConfig({
   dts: true,
   splitting: false,
   clean: true,
+  define: {
+    '__PLUGIN_VERSION__': JSON.stringify(PKG_VERSION),
+  },
   external: [
     'openclaw',
     /^openclaw\/plugin-sdk(\/.+)?$/,

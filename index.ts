@@ -12,7 +12,7 @@ import { emptyPluginConfigSchema } from 'openclaw/plugin-sdk';
 
 import { qqbotPlugin } from './src/channel.js';
 import { setQQBotRuntime } from './src/runtime.js';
-import { registerChannelTool } from './src/tools/channel.js';
+import { registerPlatformTool } from './src/tools/platform.js';
 import { registerRemindTool } from './src/tools/remind.js';
 import { verifyRuntimeContract } from './src/adapter/contract.js';
 
@@ -39,7 +39,7 @@ const plugin = {
     }
 
     api.registerChannel({ plugin: qqbotPlugin as any });
-    registerChannelTool(api);
+    registerPlatformTool(api);
     registerRemindTool(api);
   },
 };

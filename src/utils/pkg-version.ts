@@ -10,48 +10,17 @@
 import path from "node:path";
 import fs from "node:fs";
 
-/** 已定位到的插件 package.json 路径，避免重复遍历目录树 */
-let _resolvedPkgPath: string | null = null;
-
 /** OpenClaw 框架版本缓存（一次查完不再重复 io） */
 let _cachedOpenclawVersion: string | undefined;
 
+declare const __PLUGIN_VERSION__: string;
+
 /**
- * 获取插件自身版本号（@tencent-connect/openclaw-qqbot）。
- * 从 __filename 向上遍历目录树找同名 package.json。
+ * 获取插件自身版本号。
+ * 编译时由 tsup define 注入，零运行时 IO。
  */
 export function getPackageVersion(): string {
-  if (_resolvedPkgPath) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(_resolvedPkgPath, "utf8"));
-      if (pkg.name === "@tencent-connect/openclaw-qqbot" && pkg.version) {
-        return pkg.version as string;
-      }
-    } catch {
-      _resolvedPkgPath = null;
-    }
-  }
-
-  // 从 __filename 向上遍历目录树
-  if (typeof __filename === "string") {
-    let dir = path.dirname(__filename);
-    const root = path.parse(dir).root;
-    while (dir !== root) {
-      const candidate = path.join(dir, "package.json");
-      try {
-        if (fs.existsSync(candidate)) {
-          const pkg = JSON.parse(fs.readFileSync(candidate, "utf8"));
-          if (pkg.name === "@tencent-connect/openclaw-qqbot" && pkg.version) {
-            _resolvedPkgPath = candidate;
-            return pkg.version as string;
-          }
-        }
-      } catch { /* next */ }
-      dir = path.dirname(dir);
-    }
-  }
-
-  return "unknown";
+  return typeof __PLUGIN_VERSION__ !== 'undefined' ? __PLUGIN_VERSION__ : 'unknown';
 }
 
 // ── OpenClaw 框架版本 ──
