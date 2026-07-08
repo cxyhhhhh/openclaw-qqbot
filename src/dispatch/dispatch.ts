@@ -215,6 +215,7 @@ export async function dispatchToOpenClaw(
                             replyToId: deliverCtx.replyToId, accountId: deliverCtx.accountId,
                             log: deliverCtx.log, agentId: deliverCtx.agentId,
                           });
+                          deliveredMediaUrls.add(url);
                         } catch (err) {
                           dlog?.error(`block media failed: ${err instanceof Error ? err.message : String(err)}`);
                         }
@@ -266,7 +267,15 @@ export async function dispatchToOpenClaw(
                     return;
                   }
 
-                  await deliverReply(payload, info, deliverCtx);
+                  const filteredPayload = deliveredMediaUrls.size > 0
+                    ? {
+                        ...payload,
+                        mediaUrl: payload.mediaUrl && !deliveredMediaUrls.has(payload.mediaUrl)
+                          ? payload.mediaUrl : undefined,
+                        mediaUrls: payload.mediaUrls?.filter((u) => !deliveredMediaUrls.has(u)),
+                      }
+                    : payload;
+                  await deliverReply(filteredPayload, info, deliverCtx);
                 } catch (err) {
                   dlog?.error(`error: ${err instanceof Error ? err.message : String(err)}`);
                 }

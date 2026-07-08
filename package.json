@@ -38,9 +38,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts",
-    "prepack": "npm install --omit=dev",
-    "postinstall": "node scripts/postinstall-link-sdk.js 2>/dev/null || true"
+    "lint:runtime": "npx tsx src/runtime-adapter/lint-runtime-access.ts"
   },
   "dependencies": {
     "@tencent-connect/qqbot-nodejs": "npm:@tencent/qqbot-nodejs@0.0.0-dev.8a6be470",
