@@ -176,7 +176,19 @@ export async function dispatchToOpenClaw(
           await deliverReply(payload, info, deliverCtx);
         },
       },
+      ...(streamingController
+        ? {
+            replyOptions: {
+              onPartialReply: async (p: { text?: string }) => {
+                if (p.text) await streamingController.onPartialReply(p.text);
+              },
+            },
+          }
+        : {}),
     });
+    if (streamingController && !streamingController.isTerminal) {
+      await streamingController.finalize();
+    }
     if (debouncer) await debouncer.flushAll();
   } else {
     await adapters.inboundRun!({
