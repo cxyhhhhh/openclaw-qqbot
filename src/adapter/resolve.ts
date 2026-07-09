@@ -136,11 +136,15 @@ export function resolveRuntimeAdapters(
     : rawFinalizeContext
       ? (params) => {
           // 将统一参数转换为旧 API 的 rawCtxPayload 格式
+          const isCommand = params.access?.commands?.authorized ?? false;
           const rawCtx = {
             Body: params.message.body,
             BodyForAgent: params.message.bodyForAgent,
             RawBody: params.message.rawBody,
             CommandBody: params.message.commandBody ?? params.message.rawBody,
+            CommandSource: isCommand ? 'text' : undefined,
+            CommandTurn: params.command ?? undefined,
+            CommandAuthorized: isCommand,
             From: params.from,
             To: params.reply.to,
             SessionKey: params.route.routeSessionKey,
@@ -155,7 +159,6 @@ export function resolveRuntimeAdapters(
             Timestamp: params.timestamp ?? Date.now(),
             OriginatingChannel: params.channel,
             OriginatingTo: params.reply.originatingTo ?? params.reply.to,
-            CommandAuthorized: false,
             ...params.extra,
           };
           return rawFinalizeContext(rawCtx);

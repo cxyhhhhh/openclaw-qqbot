@@ -18,6 +18,7 @@ import { assembleBody, type AssembledBody } from './body-assembler.js';
 import { sendText, getGateway } from '../outbound/outbound-service.js';
 import { sendMedia } from '../outbound/media-send.js';
 import { deliverReply, type DeliverPayload, type DeliverInfo, type DeliverContext } from '../outbound/deliver-pipeline.js';
+import { buildCtxPayload } from './ctx-builder.js';
 
 import { DeliverDebouncer } from '../outbound/debounce.js';
 import { StreamingController, shouldUseStreaming } from '../outbound/streaming-controller.js';
@@ -66,47 +67,7 @@ export async function dispatchToOpenClaw(
   const agentId = route.agentId ?? 'default';
   const storePath = adapters.resolveStorePath?.((cfg as any)?.session?.store, { agentId }) ?? '';
 
-  const ctxPayload = adapters.buildInboundContext?.({
-    channel: 'qqbot',
-    accountId: route.accountId,
-    provider: 'qqbot',
-    surface: 'qqbot',
-    messageId: envelope.messageId,
-    timestamp: Date.now(),
-    from: envelope.targetId,
-    sender: { id: envelope.senderId, name: envelope.senderName },
-    conversation: {
-      kind: envelope.chatScope === 'group' ? 'group' : 'direct',
-      label: assembled.systemPrompt,
-    },
-    message: {
-      body: assembled.webBody,
-      bodyForAgent: assembled.agentBody,
-      rawBody: assembled.rawBody,
-      commandBody: assembled.rawBody,
-    },
-    route: {
-      routeSessionKey: route.sessionKey,
-      accountId: route.accountId,
-    },
-    reply: {
-      to: envelope.targetId,
-      replyToId: envelope.messageId,
-      originatingTo: envelope.targetId,
-    },
-  });
-
-  const processed = ctx.state.processedAttachments as any;
-  if (processed?.localMediaPaths?.length) {
-    (ctxPayload as any).MediaPaths = processed.localMediaPaths;
-    (ctxPayload as any).MediaPath = processed.localMediaPaths[0];
-    (ctxPayload as any).MediaTypes = processed.localMediaTypes;
-    (ctxPayload as any).MediaType = processed.localMediaTypes?.[0];
-  }
-  if (processed?.remoteMediaUrls?.length) {
-    (ctxPayload as any).MediaUrls = processed.remoteMediaUrls;
-    (ctxPayload as any).MediaUrl = processed.remoteMediaUrls[0];
-  }
+  const ctxPayload = buildCtxPayload({ assembled, envelope, route, msg, ctx, adapters });
 
   const ttsRuntime = (runtime as any)?.tts ?? (runtime as any)?.channel?.runtimeContexts?.get?.('tts');
 
