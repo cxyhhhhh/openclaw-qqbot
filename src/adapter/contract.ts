@@ -57,7 +57,7 @@ export function verifyRuntimeContract(rt: PluginRuntime): ContractResult {
     if (!r.probe(rt)) degraded.push(r.name);
   }
 
-  log.info(`openclaw=${version} required=${REQUIRED.length - missing.length}/${REQUIRED.length} degraded=${degraded.length}/${OPTIONAL.length}`);
+  log.debug(`openclaw=${version} required=${REQUIRED.length - missing.length}/${REQUIRED.length} degraded=${degraded.length}/${OPTIONAL.length}`);
   if (missing.length) {
     log.error(`BROKEN — missing: ${missing.join(', ')}`);
   }
