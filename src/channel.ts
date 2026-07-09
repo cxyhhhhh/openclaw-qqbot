@@ -30,6 +30,7 @@ import { sendMedia } from './outbound/media-send.js';
 import type { PluginLogger } from './utils/plugin-logger.js';
 import { qqbotSetupWizard } from './setup/surface.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
+import { sanitizeQQBotText } from './outbound/sanitize.js';
 import { startAccountWithCredentialRecovery, logoutAndClearCredentials, stopAccountGracefully } from './gateway/lifecycle.js';
 import { loadCredentialBackup } from './features/credential-backup.js';
 import { isApprovalPayload, approvalStubs } from './features/approval-utils.js';
@@ -162,7 +163,8 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
 
   // ── 出站 ──
   outbound: {
-    deliveryMode: 'direct',
+    deliveryMode: 'direct' as const,
+    sanitizeText: ({ text }: { text: string; payload: any }) => sanitizeQQBotText(text),
     chunker: (text, limit) => {
       const adapters = getAdapters(getQQBotRuntime());
       if (adapters.chunkMarkdownText) return adapters.chunkMarkdownText(text, limit);
