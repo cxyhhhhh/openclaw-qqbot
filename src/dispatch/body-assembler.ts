@@ -123,7 +123,7 @@ function buildUserContent(sanitizedRaw: string, processed: ProcessedAttachments 
 function buildQuotePart(quote: ResolvedQuote | undefined): string {
   if (!quote) return '';
   const text = quote.text || 'Original content unavailable';
-  return `${QUOTE_BEGIN}\n${text}\n${QUOTE_END}\n`;
+  return `${QUOTE_BEGIN}\n${text}\n${QUOTE_END}\n${CURRENT_MSG}\n`;
 }
 
 /** Layer 3：quote + [Sender] {content}{(@you)?} */

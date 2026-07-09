@@ -25,7 +25,7 @@ import { attachmentProcessor } from '../middleware/attachment.js';
 import { assembleBody } from '../dispatch/body-assembler.js';
 import { getPersistedRefIndexStore } from '../features/ref-index-store.js';
 import { createPolicyInjector } from '../middleware/policy-injector.js';
-import { getHistoryStore } from '../features/history-store.js';
+import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { dynamicAccessControl } from '../middleware/access-control.js';
 
 export interface MiddlewareSetupOptions {
@@ -48,8 +48,15 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   bot.use(createPolicyInjector(account));
 
   // 4. 群历史缓冲 — 放在门控之前，确保所有消息（含未 @bot）都计入上下文
-  //    limit 从 ctx.state.policy.group.historyLimit 读取
-  bot.use(historyBuffer({ store: getHistoryStore() }));
+  //    limit 从 ctx.state.policy.group.historyLimit 读取，key 带 accountId 前缀隔离多账号
+  bot.use(historyBuffer({
+    store: getHistoryStore(),
+    groupKey: (ctx) => {
+      const gid = ctx.message.groupOpenid;
+      if (ctx.message.kind !== 'group' || !gid) return undefined;
+      return historyGroupKey(account.accountId, gid);
+    },
+  }));
 
   // 5. 动态访问控制 — 从 ctx.state.policy 动态读取，支持 pairing
   bot.use(dynamicAccessControl({

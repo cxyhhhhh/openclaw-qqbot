@@ -8,7 +8,12 @@ export function getHistoryStore(): HistoryStore {
   return _store;
 }
 
+/** 用 accountId 前缀隔离多账号，避免同群历史串用 */
+export function historyGroupKey(accountId: string, groupId: string): string {
+  return `${accountId}:${groupId}`;
+}
+
 /** 清空群历史（dispatch 完成后调用） */
-export function clearGroupHistory(groupId: string): void {
-  _store?.clear?.(groupId);
+export function clearGroupHistory(accountId: string, groupId: string): void {
+  _store?.clear?.(historyGroupKey(accountId, groupId));
 }

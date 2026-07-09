@@ -331,7 +331,7 @@ export async function dispatchToOpenClaw(
 
   // 群消息回复后清空历史缓存（避免下次 @ 时重复组包）
   if (envelope.chatScope === 'group') {
-    clearGroupHistory(envelope.groupId ?? envelope.senderId);
+    clearGroupHistory(account.accountId, envelope.groupId ?? envelope.senderId);
   }
 
   if (streamingController && !streamingController.isTerminal) {
