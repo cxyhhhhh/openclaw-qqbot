@@ -47,25 +47,29 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
   //    后续 dynamicAccessControl / mentionGate / historyBuffer 自动读取
   bot.use(createPolicyInjector(account));
 
-  // 4. 动态访问控制 — 从 ctx.state.policy 动态读取，支持 pairing
+  // 4. 群历史缓冲 — 放在门控之前，确保所有消息（含未 @bot）都计入上下文
+  //    limit 从 ctx.state.policy.group.historyLimit 读取
+  bot.use(historyBuffer({ store: getHistoryStore() }));
+
+  // 5. 动态访问控制 — 从 ctx.state.policy 动态读取，支持 pairing
   bot.use(dynamicAccessControl({
     accountId: account.accountId,
     getRuntime: opts.getRuntime,
   }));
 
-  // 5. 群聊 @bot 门控（从 ctx.state.policy.group 读取动态配置）
+  // 6. 群聊 @bot 门控（从 ctx.state.policy.group 读取动态配置）
   bot.use(mentionGate());
 
-  // 6. 内容清洗（去 @marker、表情标签、多余空白）
+  // 7. 内容清洗（去 @marker、表情标签、多余空白）
   bot.use(contentSanitizer({ parseFaceTags: true }));
 
-  // 7. 三层限流（sender / group / global）
+  // 8. 三层限流（sender / group / global）
   bot.use(rateLimiter());
 
-  // 8. 并发串行+合并（在副作用中间件之前）
+  // 9. 并发串行+合并（在副作用中间件之前）
   //     - 同 peer 串行处理，避免平台 session conflict
   //     - 处理中消息暂存 buffer；完成后合并为一条，继续走完剩余中间件链
-  //       （typingIndicator/quoteRef/historyBuffer/... 直到 bot.on("message")）
+  //       （typingIndicator/quoteRef/attachmentProcessor/... 直到 bot.on("message")）
   //     - 合并时清除 assembledBody 让 dispatch.ts 用合并后 content 重建
   bot.use(concurrencyGuard({
     strategy: 'merge',
@@ -90,16 +94,13 @@ export function setupMiddlewares(bot: QQBot, account: ResolvedQQBotAccount, opts
     },
   }));
 
-  // 9. C2C 输入状态指示器
+  // 10. C2C 输入状态指示器
   bot.use(typingIndicator());
 
-  // 10. 引用消息解析（默认优先 msg_elements 获取文件名等丰富信息）
+  // 11. 引用消息解析（默认优先 msg_elements 获取文件名等丰富信息）
   bot.use(quoteRef({
     store: getPersistedRefIndexStore(account.accountId),
   }));
-
-  // 11. 群历史缓冲（limit 从 ctx.state.policy.group.historyLimit 读取）
-  bot.use(historyBuffer({ store: getHistoryStore() }));
 
   // 12. 附件处理（语音 STT 转录 + 图片/文件下载）
   bot.use(attachmentProcessor({ getRuntime: opts.getRuntime }));

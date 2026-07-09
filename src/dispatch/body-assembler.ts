@@ -29,10 +29,13 @@ import { getAdapters } from '../adapter/resolve.js';
 // ── 协议常量 ─────────────────────────────
 const QUOTE_BEGIN = '[Quoted message begins]';
 const QUOTE_END = '[Quoted message ends]';
-const HISTORY_CTX_START = '[Chat messages since your last reply — CONTEXT ONLY]';
-const HISTORY_CTX_END = '[CURRENT MESSAGE — reply to this]';
-const MERGE_CTX_START = '[Merged messages — CONTEXT ONLY]';
-const MERGE_CTX_END = '[CURRENT MESSAGE — reply to this one]';
+const REF_BEGIN = '[Reference message begins]';
+const REF_END = '[Reference message ends]';
+const HISTORY_BEGIN = '[Chat history begins]';
+const HISTORY_END = '[Chat history ends]';
+const MERGE_CTX_BEGIN = '[Merged messages begins]';
+const MERGE_CTX_END = '[Merged messages ends]';
+const CURRENT_MSG = '[Current message]';
 
 export interface AssembledBody {
   /** Web UI 展示用 body */
@@ -75,8 +78,8 @@ export function assembleBody(
     ? buildMergedUserMessage({ messages: mergedMessages, quotePart, isGroup, wasMentioned, getRuntime })
     : buildUserMessage({ msg, userContent, quotePart, isGroup, wasMentioned });
 
-  // ── Layer 4: dynamicCtx（媒体元数据块） ──
-  const dynamicCtx = buildDynamicCtx(processed);
+  // ── Layer 4: dynamicCtx（媒体元数据块 + msg_elements 上下文） ──
+  const dynamicCtx = buildDynamicCtx(processed, msg, quote);
 
   // ── Layer 5: agentBody（命令直通 / 群被@时前置历史） ──
   const agentBody = buildAgentBody({
@@ -116,18 +119,14 @@ function buildUserContent(sanitizedRaw: string, processed: ProcessedAttachments 
   return sanitized + attachmentInfo;
 }
 
-/** Layer 2：[Quoted message begins]…[Quoted message ends]，含 sender 信息 */
+/** Layer 2：[Quoted message begins]…[Quoted message ends] */
 function buildQuotePart(quote: ResolvedQuote | undefined): string {
   if (!quote) return '';
-  const sender = quote.entry?.senderName
-    ? `${quote.entry.senderName} (${quote.entry.senderId})`
-    : '';
-  const senderLine = sender ? `${sender}: ` : '';
   const text = quote.text || 'Original content unavailable';
-  return `${QUOTE_BEGIN}\n${senderLine}${text}\n${QUOTE_END}\n`;
+  return `${QUOTE_BEGIN}\n${text}\n${QUOTE_END}\n`;
 }
 
-/** Layer 3：[Sender] {quote}{content}{(@you)?} */
+/** Layer 3：quote + [Sender] {content}{(@you)?} */
 function buildUserMessage(input: {
   msg: QQBotInboundMessage;
   userContent: string;
@@ -140,7 +139,7 @@ function buildUserMessage(input: {
 
   if (isGroup) {
     const senderLabel = formatSenderLabel(msg.senderName, msg.senderId);
-    return `[${senderLabel}] ${quotePart}${userContent}${atYouTag}`;
+    return `${quotePart}[${senderLabel}] ${userContent}${atYouTag}`;
   }
   return `${quotePart}${userContent}`;
 }
@@ -180,7 +179,7 @@ function buildMergedUserMessage(input: {
   }
 
   const last = lines.pop()!;
-  return [MERGE_CTX_START, ...lines, MERGE_CTX_END, last].join('\n');
+  return [MERGE_CTX_BEGIN, ...lines, MERGE_CTX_END, CURRENT_MSG, last].join('\n');
 }
 
 function formatMergedLine(
@@ -210,18 +209,21 @@ function allSameSender(messages: MiddlewareContext[]): boolean {
   return messages.every((c) => c.message.senderId === first);
 }
 
-/** Layer 4：- Images / - Voice / - ASR 元数据块 */
-function buildDynamicCtx(processed: ProcessedAttachments | undefined): string {
-  if (!processed) return '';
+/** Layer 4：- Images / - Voice / - ASR 元数据块 + msg_elements 引用上下文 */
+function buildDynamicCtx(
+  processed: ProcessedAttachments | undefined,
+  msg: QQBotInboundMessage,
+  quote: ResolvedQuote | undefined,
+): string {
   const lines: string[] = [];
 
   // Images
-  if (processed.imageUrls.length > 0) {
+  if (processed?.imageUrls.length) {
     lines.push(`- Images: ${processed.imageUrls.join(', ')}`);
   }
 
   // Voice：从 transcripts 行存投影出 paths + urls，去重后拼接
-  const transcripts = processed.transcripts ?? [];
+  const transcripts = processed?.transcripts ?? [];
   const voiceRefs = unique([
     ...transcripts.map((t) => t.localPath).filter(isNonEmpty),
     ...transcripts.map((t) => t.remoteUrl).filter(isNonEmpty),
@@ -240,7 +242,42 @@ function buildDynamicCtx(processed: ProcessedAttachments | undefined): string {
     lines.push(`- ASR: ${asrTexts.join(' | ')}`);
   }
 
+  // msg_elements 上下文（仅当非引用消息时解析，避免与 quotePart 重复）
+  if (!quote) {
+    const elementsCtx = buildMsgElementsContext(msg);
+    if (elementsCtx.length > 0) {
+      lines.push(REF_BEGIN, ...elementsCtx, REF_END);
+    }
+  }
+
   return lines.length > 0 ? `${lines.join('\n')}\n\n` : '';
+}
+
+/** 从 msg_elements 提取上下文（非引用消息也解析，如被回复的 bot 消息等） */
+function buildMsgElementsContext(msg: QQBotInboundMessage): string[] {
+  const elements = msg.msgElements;
+  if (!elements || elements.length === 0) return [];
+
+  const lines: string[] = [];
+  let index = 0;
+  for (const el of elements) {
+    const content = el.content?.trim();
+    if (!content) continue;
+    index += 1;
+
+    const author = (el as Record<string, unknown>).author as
+      | { username?: string }
+      | undefined;
+    const sender = author?.username ?? '未知';
+
+    lines.push(
+      `=== 消息 ${index} ===`,
+      `[消息内容] ${content}`,
+      `[发送者] ${sender}`,
+    );
+  }
+
+  return lines;
 }
 
 function unique<T>(arr: T[]): T[] {
@@ -274,7 +311,7 @@ function buildAgentBody(input: {
         return `[${label}] ${h.content}`;
       })
       .join('\n');
-    return [HISTORY_CTX_START, historyText, '', HISTORY_CTX_END, base].join('\n');
+    return [HISTORY_BEGIN, historyText, '', HISTORY_END, CURRENT_MSG, base].join('\n');
   }
 
   return base;
