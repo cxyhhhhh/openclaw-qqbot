@@ -311,8 +311,17 @@ export function resolveQQBotAccount(
     markdownSupport: accountConfig.markdownSupport !== false,
     userAgentSuffix: resolveUserAgentSuffix(cfg),
     processingTimeoutMs: resolveProcessingTimeoutMs(accountConfig),
-    config: accountConfig,
+    config: normalizeAccountConfig(accountConfig),
   };
+}
+
+/** 兼容旧版 streaming: boolean 格式 → { mode: "partial" | "off" }，对齐框架 schema */
+function normalizeAccountConfig(raw: QQBotAccountConfig): QQBotAccountConfig {
+  if (typeof (raw as any).streaming === 'boolean') {
+    const { streaming, ...rest } = raw as any;
+    return { ...rest, streaming: { mode: streaming ? 'partial' : 'off' } };
+  }
+  return raw;
 }
 
 /**

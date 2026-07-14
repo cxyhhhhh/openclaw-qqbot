@@ -219,5 +219,10 @@ export function shouldUseStreaming(
   targetScope: 'c2c' | 'group' | 'channel',
 ): boolean {
   if (targetScope !== 'c2c') return false;
-  return account.config?.streaming === true;
+  const streaming = account.config?.streaming;
+  if (typeof streaming === 'boolean') return streaming;
+  if (streaming && typeof streaming === 'object') {
+    return (streaming as any).mode !== 'off';
+  }
+  return false;
 }

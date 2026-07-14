@@ -3,17 +3,16 @@
  *
  * 解决热更新被打断时 openclaw.json 中 appId/secret 丢失的问题。
  *
- * 原理：
- *   - 每次 gateway 成功启动后，把当前账户的 appId/secret 写入暂存文件
- *   - 插件启动时如果检测到配置中 appId/secret 为空，尝试从暂存文件恢复
- *   - 暂存文件存储在 ~/.openclaw/qqbot/data/ 下，不受插件目录替换影响
+ * 存储路径：~/.openclaw/qqbot/data/credential-backup/current.json
+ * 使用子目录避免被框架 SQLite 迁移扫描（迁移只匹配 data/credential-backup.json）。
  */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { getQQBotDataDir } from '../utils/platform.js';
 
-const BACKUP_FILENAME = 'credential-backup.json';
+const BACKUP_DIR = 'credential-backup';
+const BACKUP_FILENAME = 'current.json';
+const LEGACY_FILENAME = 'credential-backup.json';
 
 interface CredentialBackup {
   accountId: string;
@@ -23,7 +22,7 @@ interface CredentialBackup {
 }
 
 function getBackupPath(): string {
-  return path.join(getQQBotDataDir('data'), BACKUP_FILENAME);
+  return path.join(getQQBotDataDir('data'), BACKUP_DIR, BACKUP_FILENAME);
 }
 
 /**
@@ -57,14 +56,27 @@ export function saveCredentialBackup(accountId: string, appId: string, clientSec
  */
 export function loadCredentialBackup(accountId?: string): CredentialBackup | null {
   try {
+    // 优先读新路径
     const backupPath = getBackupPath();
-    if (!fs.existsSync(backupPath)) return null;
-    const raw = fs.readFileSync(backupPath, 'utf8');
-    const data: CredentialBackup = JSON.parse(raw);
-    if (!data.appId || !data.clientSecret) return null;
-    if (accountId && data.accountId !== accountId) return null;
-    return data;
+    if (fs.existsSync(backupPath)) {
+      const data = readBackupFile(backupPath, accountId);
+      if (data) return data;
+    }
+    // 兼容旧路径（升级过渡）
+    const legacyPath = path.join(getQQBotDataDir('data'), LEGACY_FILENAME);
+    if (fs.existsSync(legacyPath)) {
+      return readBackupFile(legacyPath, accountId);
+    }
+    return null;
   } catch {
     return null;
   }
+}
+
+function readBackupFile(filePath: string, accountId?: string): CredentialBackup | null {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const data: CredentialBackup = JSON.parse(raw);
+  if (!data.appId || !data.clientSecret) return null;
+  if (accountId && data.accountId !== accountId) return null;
+  return data;
 }
