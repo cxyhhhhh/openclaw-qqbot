@@ -145,11 +145,15 @@ export interface QQBotAccountConfig {
    * 是否启用流式消息（默认 false）
    * 启用后，AI 的回复会以流式形式逐步显示在 QQ 聊天中，
    * 用户可以看到文字逐字出现的打字机效果。
-   * 设置为 true 可开启流式消息。
+   *
+   * 兼容布尔值和对象格式，对齐框架 schema：
+   *   - true / false         旧版布尔格式（自动转换为对象）
+   *   - { mode: "partial" }  开启（对齐 StreamingMode.partial）
+   *   - { mode: "off" }      关闭
    *
    * 注意：仅 C2C（私聊）支持流式消息 API。
    */
-  streaming?: boolean;
+  streaming?: boolean | { mode: 'partial' | 'off' };
   /**
    * STT (语音转文字) 配置
    * 配置后，收到语音消息时会自动调用 STT 服务转录为文字

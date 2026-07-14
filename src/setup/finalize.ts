@@ -94,7 +94,7 @@ export function applyAccountDefaults(cfg: OpenClawConfig, accountId: string, use
   const next = { ...cfg, channels: { ...cfg.channels } };
   const qqbot = { ...(next.channels?.qqbot as Record<string, unknown> ?? {}) } as Record<string, unknown>;
 
-  const defaults: Record<string, unknown> = { streaming: true, dmPolicy: 'allowlist', mediaMaxMb: 200 };
+  const defaults: Record<string, unknown> = { streaming: { mode: 'partial' }, dmPolicy: 'allowlist', mediaMaxMb: 200 };
   if (userOpenid) defaults.allowFrom = [userOpenid];
 
   if (accountId === DEFAULT_ACCOUNT_ID) {

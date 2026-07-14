@@ -16,7 +16,10 @@ export function botStreaming(account: ResolvedQQBotAccount, getRuntime: () => Pl
 流式消息仅支持 C2C（私聊）场景。`,
     handler: async (ctx) => {
       const args = (Array.isArray(ctx.command.args) ? ctx.command.args.join(' ') : String(ctx.command.args ?? '')).trim().toLowerCase();
-      const currentEnabled = account.config.streaming ?? false;
+      const streaming = account.config?.streaming;
+      const currentEnabled = typeof streaming === 'boolean'
+        ? streaming
+        : (streaming as any)?.mode !== 'off';
 
       // 无参数 → 显示状态
       if (!args) {
@@ -39,11 +42,11 @@ export function botStreaming(account: ResolvedQQBotAccount, getRuntime: () => Pl
       }
 
       const error = await updateAccountConfig(account, getRuntime, (acfg) => {
-        (acfg as any).streaming = targetEnabled;
+        (acfg as any).streaming = { mode: targetEnabled ? 'partial' : 'off' };
       });
       if (error) return error;
 
-      account.config.streaming = targetEnabled;
+      account.config.streaming = { mode: targetEnabled ? 'partial' : 'off' };
       return targetEnabled
         ? '✅ 流式消息已开启，私聊消息将以流式方式发送。'
         : '✅ 流式消息已关闭，私聊消息将以静态方式发送。';
