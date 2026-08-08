@@ -202,6 +202,12 @@ export async function dispatchToOpenClaw(
               dlog?.error(`Session record error: ${err}`);
             },
           },
+          runDispatchLifecycle: {
+            turnAdoptionLifecycle: undefined,
+            onDispatchSkipped: (reason: string) => {
+              dlog?.info(`dispatch skipped reason=${reason} sessionKey=${route.sessionKey}`);
+            },
+          },
           runDispatch: () => {
             return adapters.dispatchReply!({
               ctx: ctxPayload,
