@@ -15,14 +15,13 @@ interface ApiProbe {
   probe: (rt: PluginRuntime) => boolean;
 }
 
-const REQUIRED: ApiProbe[] = [
+const REQUIRED: ApiProbe[] = [];
+
+const OPTIONAL: ApiProbe[] = [
   {
     name: 'channel.reply.dispatchReplyWithBufferedBlockDispatcher',
     probe: (rt) => typeof (rt as any).channel?.reply?.dispatchReplyWithBufferedBlockDispatcher === 'function',
   },
-];
-
-const OPTIONAL: ApiProbe[] = [
   { name: 'channel.inbound.run (degraded)', probe: (rt) => {
     const c = (rt as any).channel;
     return typeof c?.inbound?.run === 'function' || typeof c?.turn?.run === 'function';

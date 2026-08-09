@@ -1,6 +1,6 @@
 {
   "name": "@tencent-connect/openclaw-qqbot",
-  "version": "2.0.0-alpha.1",
+  "version": "2.0.1",
   "description": "QQ Bot channel plugin for OpenClaw",
   "publishConfig": {
     "access": "public"

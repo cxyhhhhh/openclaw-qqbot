@@ -8,7 +8,7 @@
  * - @tencent-connect/qqbot-nodejs：QQ 开放平台 Node.js SDK
  */
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
-import { emptyPluginConfigSchema } from 'openclaw/plugin-sdk';
+import { emptyPluginConfigSchema } from 'openclaw/plugin-sdk/core';
 
 import { qqbotPlugin } from './src/channel.js';
 import { setQQBotRuntime } from './src/runtime.js';
