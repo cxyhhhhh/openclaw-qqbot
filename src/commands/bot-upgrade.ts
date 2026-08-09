@@ -6,7 +6,7 @@ import { checkCommandAuth } from './config-util.js';
 
 const PLUGIN_VERSION = getPackageVersion();
 const DEFAULT_UPGRADE_URL = 'https://docs.qq.com/doc/DSGxOZk1oVnVKVkpq';
-const GITHUB_URL = 'https://github.com/nicepkg/openclaw';
+const GITHUB_URL = 'https://github.com/tencent-connect/openclaw-qqbot';
 
 /** /bot-upgrade — 检查更新并查看升级指引 */
 export function botUpgrade(account: ResolvedQQBotAccount): SlashCommand {
