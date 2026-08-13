@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.1] - 2026-08-09
+
+### Improved
+
+- Enhanced message dispatch stability with better handling and logging for skipped dispatches.
+- Relaxed runtime capability checks for broader OpenClaw version compatibility.
+
+### Fixed
+
+- Fixed the `/bot-upgrade` upgrade guide link.
+
+---
+
 ## [2.0.0] - 2026-07-13
 
 ### Added

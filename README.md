@@ -10,7 +10,7 @@
 
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
-### 🚀 Current Version: `v2.0.0`
+### 🚀 Current Version: `v2.0.1`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
