@@ -4,6 +4,15 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [2.0.3] - 2026-08-25
+
+### 修复
+
+- 修复 `/bot-version` 指令仍返回旧 GitHub 仓库地址的问题。
+- 同步 `upgradeUrl` 配置项文档中的默认升级指引链接。
+
+---
+
 ## [2.0.2] - 2026-08-25
 
 ### 修复

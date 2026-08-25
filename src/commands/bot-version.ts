@@ -5,7 +5,7 @@ import { getUpdateInfo } from '../features/update-checker.js';
 import { getOpenClawVersion } from '../bot-instance.js';
 
 const PLUGIN_VERSION = getPackageVersion();
-const GITHUB_URL = 'https://github.com/nicepkg/openclaw';
+const GITHUB_URL = 'https://github.com/tencent-connect/openclaw-qqbot';
 
 /** /bot-version — 查看插件版本号 */
 export function botVersion(_account: ResolvedQQBotAccount): SlashCommand {

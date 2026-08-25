@@ -114,7 +114,7 @@ export interface QQBotAccountConfig {
   urlDirectUpload?: boolean;
   /**
    * /bot-upgrade 指令返回的升级指引网址
-   * 默认: https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg
+   * 默认: https://docs.qq.com/doc/DSGxOZk1oVnVKVkpq
    */
   upgradeUrl?: string;
   /**
