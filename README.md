@@ -201,7 +201,7 @@ Credentials are automatically backed up before upgrade. Version existence is ver
 
 > ⚠️ v1.6.6 and below do not support hot upgrade via `/bot-upgrade`. Please upgrade using the following command:
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+> npx -y @tencent-connect/openclaw-qqbot-cli@latest
 > ```
 
 <img width="360" src="docs/images/hot-update.jpg" alt="Hot Upgrade Demo" />
@@ -287,59 +287,40 @@ Toggle group @trigger behavior at runtime — changes persist instantly, no rest
 
 ### Step 2 — Install / Upgrade the Plugin
 
-**Option Zero: QR Code Login (Recommended, no manual credentials needed)**
+**Recommended: Interactive Wizard (install + bind via QR code)**
 
-v2.0.0 supports QR code binding — no need to manually copy AppID/AppSecret:
-
-```bash
-# Install the plugin
-openclaw plugins install @tencent-connect/openclaw-qqbot@latest
-
-# Login via QR code (either one)
-openclaw onboard
-# or
-openclaw channels login --channel qqbot
-```
-
-A QR code will appear in the terminal. Scan it with your phone QQ to automatically complete credential setup and account configuration — no manual key input required.
-
-
-**Option A: Remote One-Liner (Easiest, no clone required)**
+Run a single command to launch the interactive wizard:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh \
-  | bash -s -- --appid YOUR_APPID --secret YOUR_SECRET
+npx -y @tencent-connect/openclaw-qqbot-cli@latest
 ```
 
-One command does it all: download script → cleanup old plugins → install → configure channel → restart service. Once done, open QQ and start chatting!
+The wizard guides you through the full setup end-to-end:
 
-> `--appid` and `--secret` are **required for first-time install**. For subsequent upgrades, run the following command to upgrade to the latest version:
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
-> ```
+1. **Environment check** — verifies the OpenClaw config & CLI, and detects the installed plugin and its version
+2. **Install / upgrade** — installs or upgrades the `@tencent-connect/openclaw-qqbot` plugin to the latest version (pick an npm registry when prompted)
+3. **Built-in plugin conflict resolution** — auto-detects and resolves conflicts with the built-in `qqbot` plugin
+4. **Bind your bot (interactive)** — enter the bot management menu and choose how to bind:
+   - **Scan QR code** — a QR code appears in the terminal; scan it with your phone QQ to complete binding. The code auto-refreshes on expiry; press `m` to switch to manual input, or `q` / `Esc` to go back.
+   - **Manual input** — enter AppID, AppSecret, and an optional display name
 
-**Option B: Local Script (if you've cloned the repo)**
+The gateway restarts automatically after each configuration change. Open QQ and start chatting!
+
+> 💡 **Tip:** Scanning the QR code means you don't need to manually copy AppID/AppSecret.
+
+**Upgrade to the latest version (skip the wizard)**
+
+If the plugin is already installed and you only need to upgrade:
 
 ```bash
-# Via npm
-bash ./scripts/upgrade-via-npm.sh --appid YOUR_APPID --secret YOUR_SECRET
-
-# Or via source
-bash ./scripts/upgrade-via-source.sh --appid YOUR_APPID --secret YOUR_SECRET
+npx -y @tencent-connect/openclaw-qqbot-cli@latest update
 ```
 
-**Common flags:**
+Add `-y` to skip the interactive npm-registry prompt, or pin a specific version with `update <version>`.
 
-| Flag | Description |
-|------|-------------|
-| `--appid <id> --secret <secret>` | Configure channel (required for first install, or to change credentials) |
-| `--version <version>` | Install a specific version (npm script only) |
-| `--self-version` | Install the version from local `package.json` (npm script only) |
-| `-h` / `--help` | Show full usage |
+**Manual Install / Upgrade (advanced)**
 
-> Environment variables `QQBOT_APPID` / `QQBOT_SECRET` are also supported.
-
-**Option C: Manual Install / Upgrade**
+Prefer full manual control? Use the native OpenClaw CLI:
 
 ```bash
 # Uninstall old plugins (skip if first install)
@@ -349,7 +330,13 @@ openclaw plugins uninstall openclaw-qqbot
 # Install latest
 openclaw plugins install @tencent-connect/openclaw-qqbot@latest
 
-# Configure channel (first install only)
+# Configure channel (pick one)
+# Option 1: Scan QR code to log in
+openclaw onboard
+# or
+openclaw channels login --channel qqbot
+
+# Option 2: Enter credentials manually
 openclaw channels add --channel qqbot --token "AppID:AppSecret"
 
 # Start / restart

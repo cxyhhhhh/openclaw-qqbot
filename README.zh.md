@@ -196,7 +196,7 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 > ⚠️ v1.6.6 及以下版本暂不支持通过 `/bot-upgrade` 执行热更新，请通过以下命令升级：
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+> npx -y @tencent-connect/openclaw-qqbot-cli@latest
 > ```
 
 <img width="360" src="docs/images/hot-update.jpg" alt="一键热更新演示" />
@@ -284,58 +284,40 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 ### 第二步 — 安装 / 升级插件
 
-**方式零：QR 码扫码登录（推荐，无需手动填写凭证）**
+**推荐：交互式向导（安装 + 扫码绑定）**
 
-v2.0.0 起支持 QR 码扫码绑定，无需手动复制 AppID/AppSecret：
-
-```bash
-# 安装插件
-openclaw plugins install @tencent-connect/openclaw-qqbot@latest
-
-# 扫码登录（二选一）
-openclaw onboard
-# 或
-openclaw channels login --channel qqbot
-```
-
-终端会显示一个二维码，用手机 QQ 扫描即可自动完成凭证写入和账户配置，整个过程无需手动输入任何密钥。
-
-**方式一：远程一键执行（最简单，无需 clone 仓库）**
+执行下面一条命令即可启动交互式向导：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh \
-  | bash -s -- --appid YOUR_APPID --secret YOUR_SECRET
+npx -y @tencent-connect/openclaw-qqbot-cli@latest
 ```
 
-一行命令搞定：下载脚本 → 清理旧插件 → 安装 → 配置通道 → 启动服务。完成后打开 QQ 即可开始聊天！
+向导会引导你端到端完成整个配置流程：
 
-> 首次安装**必须**传 `--appid` 和 `--secret`。后续升级执行此指令可以升级为最新版：
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
-> ```
+1. **环境检测** —— 校验 OpenClaw 配置与 CLI，并检测已安装插件及其版本
+2. **安装 / 升级** —— 安装或升级 `@tencent-connect/openclaw-qqbot` 插件到最新版本（按提示选择 npm 源）
+3. **内置插件冲突处理** —— 自动检测并解决与内置 `qqbot` 插件的冲突
+4. **交互式绑定机器人** —— 进入机器人管理菜单，选择绑定方式：
+   - **扫码绑定** —— 终端显示二维码，用手机 QQ 扫描即可完成绑定（二维码过期自动刷新；按 `m` 切换手动输入，按 `q` / `Esc` 返回上级）
+   - **手动输入** —— 依次输入 AppID、AppSecret 和展示名（可选）
 
-**方式二：本地脚本（已 clone 仓库时使用）**
+每次配置变更后 gateway 会自动重启。完成后打开 QQ 即可开始聊天！
+
+> 💡 **提示：** 使用扫码绑定，无需手动复制 AppID/AppSecret。
+
+**仅升级到最新版本（跳过向导）**
+
+若插件已安装、只需升级：
 
 ```bash
-# 通过 npm 安装
-bash ./scripts/upgrade-via-npm.sh --appid YOUR_APPID --secret YOUR_SECRET
-
-# 或通过源码安装
-bash ./scripts/upgrade-via-source.sh --appid YOUR_APPID --secret YOUR_SECRET
+npx -y @tencent-connect/openclaw-qqbot-cli@latest update
 ```
 
-**常用参数：**
+加 `-y` 跳过交互式 npm 源选择，或用 `update <版本号>` 指定版本。
 
-| 参数 | 说明 |
-|------|------|
-| `--appid <id> --secret <secret>` | 配置通道（首次安装必填，或更换凭证时使用） |
-| `--version <版本号>` | 安装指定版本（仅 npm 脚本） |
-| `--self-version` | 安装本地 `package.json` 中的版本（仅 npm 脚本） |
-| `-h` / `--help` | 查看完整用法 |
+**手动安装 / 升级（进阶）**
 
-> 也可通过环境变量 `QQBOT_APPID` / `QQBOT_SECRET` 设置。
-
-**方式三：手动安装 / 升级**
+希望完全手动控制？使用 OpenClaw 原生命令：
 
 ```bash
 # 卸载旧插件（首次安装可跳过）
@@ -345,7 +327,13 @@ openclaw plugins uninstall openclaw-qqbot
 # 安装最新版本
 openclaw plugins install @tencent-connect/openclaw-qqbot@latest
 
-# 配置通道（首次安装必做）
+# 配置通道（二选一，选择一个即可）
+# 方式 1：扫码登录
+openclaw onboard
+# 或
+openclaw channels login --channel qqbot
+
+# 方式 2：手动输入凭证
 openclaw channels add --channel qqbot --token "AppID:AppSecret"
 
 # 启动 / 重启
