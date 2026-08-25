@@ -399,7 +399,8 @@ cleanup_pack() {
 #  Level 2: npm pack 下载 + 解压 + openclaw plugins install <目录>
 #  绕过 ClawHub 下载，保留 openclaw CLI 的原子部署、验证、完整 install record
 #  注意：传目录路径而非 tarball 路径，因为 openclaw 的 installPluginFromArchive
-#  存在 bug（漏传 dangerouslyForceUnsafeInstall），而 installPluginFromDir 正确传递
+#  历史上存在漏传安装参数（dangerouslyForceUnsafeInstall）的 bug；
+#  传目录可让 installPluginFromDir 正确接收 --force（非 ClawHub 来源确认）等参数
 # ============================================================================
 npm_pack_native_install() {
     echo ""
@@ -411,8 +412,8 @@ npm_pack_native_install() {
     npm_pack_download || return 1
 
     # 先解压再传目录路径给 openclaw，而非直接传 tarball 路径
-    # 原因：openclaw installPluginFromArchive 漏传 --dangerously-force-unsafe-install，
-    #       installPluginFromDir 正确传递，传目录可绕过此 bug
+    # 原因：openclaw installPluginFromArchive 历史上漏传安装参数，
+    #       installPluginFromDir 正确接收 --force 等参数，传目录更可靠
     echo "  [L2 2/4] 解压 tarball..."
     local extract_dir
     extract_dir="$(mktemp -d "${TMPDIR:-/tmp}/.qqbot-extract-XXXXXX")"
@@ -451,7 +452,7 @@ npm_pack_native_install() {
     ensure_valid_cwd
     local rc=0
     run_with_timeout "$INSTALL_TIMEOUT" "plugins install (local dir)" \
-        openclaw plugins install "$package_dir" $FORCE_UNSAFE_FLAG 2>&1 || rc=$?
+        openclaw plugins install "$package_dir" $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG 2>&1 || rc=$?
 
     rm -rf "$extract_dir" 2>/dev/null || true
 
@@ -584,10 +585,20 @@ acquire_upgrade_lock
 
 OPENCLAW_VERSION="$(openclaw --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)"
 
-# OpenClaw ≥2026.3.30 引入安全扫描阻断 + --dangerously-force-unsafe-install 参数
-# 该参数仅 plugins install 支持，plugins update 不支持
+# --force：确认非 ClawHub 来源（本地路径/第三方 npm）+ 覆盖已存在插件。
+#   2026.4.5 起引入；2026.6.2 起（安全扫描移除后）是绕过非交互式来源确认的必需参数，
+#   否则本地路径安装会报 "Install cancelled; rerun with --force"。
+INSTALL_FORCE_FLAG=""
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.4.5"; then
+    INSTALL_FORCE_FLAG="--force"
+fi
+
+# --dangerously-force-unsafe-install：仅 2026.3.30 ~ 2026.6.1 内置安全扫描时代用于绕过扫描；
+#   2026.6.2 起安全扫描已移除（PR #89516），该参数废弃为 no-op（仅打印 deprecation 警告）。
+# 该参数仅 plugins install 支持，plugins update 不支持；update 决策也依赖其非空判断。
 FORCE_UNSAFE_FLAG=""
-if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.3.30"; then
+if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.3.30" \
+        && ! version_gte "$OPENCLAW_VERSION" "2026.6.2"; then
     FORCE_UNSAFE_FLAG="--dangerously-force-unsafe-install"
 fi
 
@@ -759,12 +770,14 @@ INSTALL_SPEC="${INSTALL_RECORD_INFO#*|}"
 HAS_PLUGIN_DIR=false
 [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] && [ -f "$OLD_PKG" ] && HAS_PLUGIN_DIR=true
 
-# 决策：配置有记录 + 目录存在 + 未指定版本 + <3.30 → update，其他 → install
-# ≥3.30 的 update 会被安全扫描阻断（update 不支持 --dangerously-force-unsafe-install），直接走 install
+# 决策：配置有记录 + 目录存在 + 未指定版本 → 优先 update，其他 → install
+# 仅 2026.3.30~2026.6.1（FORCE_UNSAFE_FLAG 非空）的 update 会被安全扫描阻断
+# （update 不支持 --dangerously-force-unsafe-install），直接走 install；
+# 2026.6.2 起安全扫描已移除，恢复走 update。
 USE_UPDATE=false
 if [ "$HAS_INSTALL_RECORD" = "yes" ] && [ "$HAS_PLUGIN_DIR" = "true" ] && [ -z "$TARGET_VERSION" ]; then
     if [ -n "$FORCE_UNSAFE_FLAG" ]; then
-        log "install_decision" "info" "  [检测] 配置 ✓ | 目录 ✓ | openclaw ≥3.30 → 跳过 update，直接 install（安全扫描兼容）" "decision=install" "reason=force_unsafe"
+        log "install_decision" "info" "  [检测] 配置 ✓ | 目录 ✓ | openclaw 3.30~6.1 → 跳过 update，直接 install（安全扫描兼容）" "decision=install" "reason=force_unsafe"
     else
         USE_UPDATE=true
         log "install_decision" "info" "  [检测] 配置 ✓ | 目录 ✓ | 未指定版本 → update" "decision=update"
@@ -884,7 +897,7 @@ if [ "$UPGRADE_OK" != "true" ]; then
     RC=0
     run_with_timeout "$INSTALL_TIMEOUT" \
         "plugins install" openclaw plugins install "$INSTALL_SRC" --pin \
-        $FORCE_UNSAFE_FLAG 2>&1 || RC=$?
+        $INSTALL_FORCE_FLAG $FORCE_UNSAFE_FLAG 2>&1 || RC=$?
 
     if [ $RC -eq 0 ] && [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ]; then
         mark_success; log "level1_install" "success" "  ✅ Level 1 install 成功" "method=install"
