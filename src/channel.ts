@@ -27,7 +27,7 @@ import { getQQBotRuntime, tryGetQQBotRuntime } from './runtime.js';
 import { getAdapters } from './adapter/resolve.js';
 import { sendText, getGateway } from './outbound/outbound-service.js';
 import { sendMedia } from './outbound/media-send.js';
-import type { PluginLogger } from './utils/plugin-logger.js';
+import { createPluginLogger, type PluginLogger } from './utils/plugin-logger.js';
 import { qqbotSetupWizard } from './setup/surface.js';
 import { qqbotLogin, startQrLogin, waitQrLogin } from './setup/login.js';
 import { normalizeTarget, isQQBotTarget } from './outbound/target.js';
@@ -340,7 +340,8 @@ function resolveMCPAgentId(to: string, accountId: string, cfg: unknown, log?: Pl
 
 function createOutLog(accountId: string): PluginLogger {
   const gwLog = getGateway(accountId)?.log;
-  return gwLog?.child('outbound') ?? ({} as PluginLogger);
+  if (gwLog) return gwLog.child('outbound');
+  return createPluginLogger({ forceConsole: true, prefix: `[${accountId}]` }).child('outbound');
 }
 
 // Re-export for backward compatibility
