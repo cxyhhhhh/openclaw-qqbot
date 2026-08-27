@@ -6,7 +6,7 @@
  */
 import * as path from 'node:path';
 import { MediaFileType } from '@tencent-connect/qqbot-nodejs';
-import type { QQBotGateway } from '../gateway/index.js';
+import { QQBotGateway } from '../gateway/index.js';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { parseTarget } from './target.js';
 import { ReplyLimiter } from './reply-limiter.js';
@@ -51,6 +51,16 @@ export function getGateway(accountId: string): QQBotGateway | undefined {
   return gateways.get(accountId);
 }
 
+/** gateway 未运行时，惰性构造 send-only 实例并注册进 Map 缓存复用 */
+function getOrCreateGateway(account: ResolvedQQBotAccount): QQBotGateway {
+  let gw = gateways.get(account.accountId);
+  if (!gw) {
+    gw = new QQBotGateway(account);
+    gateways.set(account.accountId, gw);
+  }
+  return gw;
+}
+
 // ── 媒体类型映射 ──
 
 export type MediaKind = 'image' | 'voice' | 'video' | 'file';
@@ -79,8 +89,7 @@ export async function sendText(params: {
   account: ResolvedQQBotAccount;
 }): Promise<SendResult> {
   const accountId = params.account.accountId;
-  const gw = gateways.get(accountId);
-  if (!gw) return { error: `Bot "${accountId}" not running` };
+  const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
     const msgId = resolveMsgId(params.replyToId, accountId);
@@ -99,8 +108,7 @@ export async function sendMedia(params: {
   account: ResolvedQQBotAccount;
 }): Promise<SendResult> {
   const accountId = params.account.accountId;
-  const gw = gateways.get(accountId);
-  if (!gw) return { error: `Bot "${accountId}" not running` };
+  const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
     const kind = params.mediaKind ?? 'image';
@@ -132,8 +140,7 @@ export async function sendVoice(params: {
   account: ResolvedQQBotAccount;
 }): Promise<SendResult> {
   const accountId = params.account.accountId;
-  const gw = gateways.get(accountId);
-  if (!gw) return { error: `Bot "${accountId}" not running` };
+  const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
     const msgId = resolveMsgId(params.replyToId, accountId);
@@ -150,8 +157,7 @@ export async function sendVideo(params: {
   account: ResolvedQQBotAccount;
 }): Promise<SendResult> {
   const accountId = params.account.accountId;
-  const gw = gateways.get(accountId);
-  if (!gw) return { error: `Bot "${accountId}" not running` };
+  const gw = getOrCreateGateway(params.account);
   try {
     const target = parseTarget(params.to);
     const msgId = resolveMsgId(params.replyToId, accountId);

@@ -60,33 +60,51 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
+/** QQBot 公共构造参数（两种模式共享） */
+function baseBotOptions(account: ResolvedQQBotAccount, log: PluginLogger) {
+  return {
+    appId: account.appId,
+    appSecret: account.clientSecret,
+    accountId: account.accountId,
+    markdownSupport: account.markdownSupport,
+    userAgent: buildUserAgent(account.userAgentSuffix),
+    baseUrl: process.env.QQBOT_BASE_URL?.replace(/\/+$/, '') || 'https://api.sgroup.qq.com',
+    tokenBaseUrl: process.env.QQBOT_TOKEN_BASE_URL?.replace(/\/+$/, '') || 'https://bots.qq.com',
+    logger: log,
+  };
+}
+
 export class QQBotGateway {
   readonly bot: QQBot;
   private readonly account: ResolvedQQBotAccount;
-  private readonly runtime: PluginRuntime;
+  private readonly runtime: PluginRuntime | undefined;
   readonly log: PluginLogger;
   private readonly textTimeout: number;
   private readonly mediaTimeout: number;
 
-  constructor(account: ResolvedQQBotAccount, runtime: PluginRuntime, log?: PluginLogger) {
+  /** 完整模式：接收 + 发送（含中间件、session 持久化、ref-index） */
+  constructor(account: ResolvedQQBotAccount, runtime: PluginRuntime, log?: PluginLogger);
+  /** Send-only 模式：仅发送（无中间件、无 session、无 ref-index） */
+  constructor(account: ResolvedQQBotAccount);
+  constructor(account: ResolvedQQBotAccount, runtime?: PluginRuntime, log?: PluginLogger) {
     this.textTimeout = resolveMs('OPENCLAW_OUTBOUND_TIMEOUT_MS', TEXT_TIMEOUT_MS);
     this.mediaTimeout = resolveMs('OPENCLAW_OUTBOUND_MEDIA_TIMEOUT_MS', MEDIA_TIMEOUT_MS);
     this.account = account;
     this.runtime = runtime;
     this.log = log ?? createPluginLogger({ prefix: `[qqbot:${account.accountId}]` });
 
-    const dataDir = getQQBotDataDir(account.accountId);
+    if (!runtime) {
+      // Send-only：极简 QQBot 实例，仅 HTTP REST 发送
+      this.bot = new QQBot({ ...baseBotOptions(account, this.log), tokenPrefetch: 'async' });
+      return;
+    }
 
+    // 完整模式：含 session 持久化、中间件、ref-index
+    const dataDir = getQQBotDataDir(account.accountId);
     const isWebhook = account.config.transport === 'webhook';
 
     this.bot = new QQBot({
-      appId: account.appId,
-      appSecret: account.clientSecret,
-      accountId: account.accountId,
-      markdownSupport: account.markdownSupport,
-      userAgent: buildUserAgent(account.userAgentSuffix),
-      baseUrl: process.env.QQBOT_BASE_URL?.replace(/\/+$/, '') || 'https://api.sgroup.qq.com',
-      tokenBaseUrl: process.env.QQBOT_TOKEN_BASE_URL?.replace(/\/+$/, '') || 'https://bots.qq.com',
+      ...baseBotOptions(account, this.log),
       transport: account.config.transport,
       webhook: isWebhook ? { path: account.config.webhook?.path, server: createPluginWebhookAdapter({ account, log: this.log }) } : undefined,
       sessionPersistence: kvSessionPersistence({
@@ -94,21 +112,21 @@ export class QQBotGateway {
         accountId: account.accountId,
       }),
       tokenPrefetch: 'sync',
-      logger: this.log,
     });
 
-    // 包装 sendText/sendMedia，回复后自动写入 ref-index store
     this.wrapBotSendForRefIndex();
 
-    // concurrencyGuard 的 merge 策略合并后会继续走完剩余中间件链，
-    // 最终与单条消息一样统一由下方 bot.on('message') 处理转发，
-    // 因此这里不再需要单独的 onMergeDispatch 回调。
     setupMiddlewares(this.bot, account, {
       getRuntime: () => runtime,
     });
   }
 
   async start(callbacks?: GatewayCallbacks, signal?: AbortSignal): Promise<void> {
+    if (!this.runtime) {
+      throw new Error(`[qqbot] Cannot start send-only gateway "${this.account.accountId}"`);
+    }
+    const runtime = this.runtime;
+
     const handleReady = () => {
       this.log.info(`Gateway ready`);
       callbacks?.onReady?.();
@@ -127,14 +145,14 @@ export class QQBotGateway {
     this.bot.on('message', async (ctx: MiddlewareContext, msg: QQBotInboundMessage) => {
       gatewayLog.debug(`message msgId=${msg.messageId}`);
       try {
-        await handleMessage(ctx, msg, this.account, this.runtime, this.log);
+        await handleMessage(ctx, msg, this.account, runtime, this.log);
       } catch (err) {
         gatewayLog.error(`Dispatch error: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
 
     this.bot.on('interaction', (_ctx, event: InteractionEvent) => {
-      handleInteraction(event, this.account, this.runtime, this.log, (id, code, data) =>
+      handleInteraction(event, this.account, runtime, this.log, (id, code, data) =>
         this.bot.acknowledgeInteraction(id, code, data),
       ).catch((err) => {
         this.log.error(`Interaction error: ${err}`);
